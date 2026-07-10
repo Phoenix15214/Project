@@ -12,7 +12,7 @@ CAMERA_WIDTH = 1280 # 1080p 1920*1080
 CAMERA_HEIGHT = 720 # 1080p 1920*1080
 MIN_AREA = 5000
 MAX_AREA = 500000
-MIN_LASER_AREA = 20
+MIN_LASER_AREA = 50
 MAX_LASER_AREA = 5000
 white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
 
@@ -23,6 +23,12 @@ def open_camera():
         cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+        cap.set(cv2.CAP_PROP_EXPOSURE, 20)
+        actual_auto_exp = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
+        actual_exp = cap.get(cv2.CAP_PROP_EXPOSURE)
+        print(f"Camera settings: Auto Exposure={actual_auto_exp}, Exposure={actual_exp}")
         return cap
     except Exception as e:
         print(f"Error opening camera: {e}")
@@ -34,9 +40,15 @@ def preprocess_frame(frame):
     img_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     white_mask = cv2.inRange(img_hsv, (0, 0, 150), (180, 30, 255))
     black_mask = cv2.inRange(img_hsv, (0, 0, 0), (180, 255, 100))
+    red_mask1 = cv2.inRange(img_hsv, (0, 43, 46), (10, 255, 255))
+    red_mask2 = cv2.inRange(img_hsv, (156, 43, 46), (180, 255, 255))
+    green_mask = cv2.inRange(img_hsv, (35, 43, 46), (85, 255, 255))
+    red_mask = cv2.bitwise_or(red_mask1, red_mask2)
+    red_frame = cv2.bitwise_and(white, white, mask=red_mask)
+    green_frame = cv2.bitwise_and(white, white, mask=green_mask)
     black_frame = cv2.bitwise_and(white, white, mask=black_mask)
     white_frame = cv2.bitwise_and(white, white, mask=white_mask)
-    return white_frame, black_frame
+    return white_frame, black_frame, red_frame, green_frame
 
 # 寻找轮廓
 def find_contours(white_frame, min_area=MIN_AREA, max_area=MAX_AREA):
@@ -165,7 +177,22 @@ def get_target_pixel_continuous(route_vertices, current_pixel, phase):
     next_pixel = np.array(current_pixel) + direction_vector * step_size
     return next_pixel.astype(int).tolist(), ending
 
-def get_laser_point(img, last_red, last_green, threshold=10):
+def get_laser_point(binary_img):
+    valid_contours = []
+    contours = find_contours(binary_img, min_area=MIN_LASER_AREA, max_area=MAX_LASER_AREA)
+    if contours is None or len(contours) == 0:
+        return None, None
+    for contour in contours:
+        (x, y), radius = cv2.minEnclosingCircle(contour)
+        circle_area = np.pi * radius * radius
+        if circle_area != 0 and abs((circle_area - circle_area)) / circle_area < 0.2:
+            valid_contours.append(contour)
+    if len(valid_contours) == 0:
+        return None, None
+    cx, cy = lb.Get_Center_Point(valid_contours, mode=lb.CENTER_MAX)
+    return cx, cy
+
+def get_laser_point_simultaneous(img, last_red, last_green, threshold=10):
     # 允许覆盖标志位，防止激光点覆盖时检测不到
     enable_cover = False
     if np.linalg.norm(np.array(last_red) - np.array(last_green)) < threshold:
@@ -205,41 +232,56 @@ def main():
     split = 0
     try:
         while True:
+            route_vertices = []
             # 获取图像
-            # _, frame = cap.read()
-            frame = cv2.imread("black.jpg")
-            frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))  # Resize for consistency
+            _, frame = cap.read()
+            # frame = cv2.imread("black.jpg")
+            # frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))  # Resize for consistency
             # 预处理
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             # 寻找轮廓(包含尺寸筛选)
-            white_frame, black_frame = preprocess_frame(frame)
-            contours = find_contours(black_frame)
+            white_frame, black_frame, red_frame, green_frame = preprocess_frame(frame)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            red_frame = cv2.morphologyEx(red_frame, cv2.MORPH_OPEN, kernel, iterations=1)
+            red_frame = cv2.morphologyEx(red_frame, cv2.MORPH_CLOSE, kernel, iterations=1)
+            redx, redy = get_laser_point(red_frame)
+            black_contours = find_contours(black_frame)
             # 筛选轮廓
-            valid_vertices = lb.Find_Poly(contours, shape=4, min_area=None, max_area=None, factor=0.1)
+            valid_vertices = lb.Find_Poly(black_contours, shape=4, min_area=None, max_area=None, factor=0.1)
+            # print(len(valid_vertices))
             valid_vertices = vertice_to_box(valid_vertices)
-            route_vertices = get_route_vertices(valid_vertices)
-            if split >= 10:
-                split = 1
-                phase = (phase + 1) % 4
-            else:
-                split += 1
-            target_pixel = get_target_pixel(route_vertices, phase=phase, split=split)
-            # warped = warp(frame, warped, valid_vertices[0])
-            cv2.circle(frame, (target_pixel[0], target_pixel[1]), 5, (255, 255, 255), -1)  # Draw target pixel
+            # print(len(valid_vertices))
+            if len(valid_vertices) > 1:
+                route_vertices = get_route_vertices(valid_vertices)
+                if split >= 10:
+                    split = 1
+                    phase = (phase + 1) % 4
+                else:
+                    split += 1
+            if len(route_vertices) > 0:
+                target_pixel = get_target_pixel(route_vertices, phase=phase, split=split)
+                # warped = warp(frame, warped, valid_vertices[0])
+                cv2.circle(frame, (target_pixel[0], target_pixel[1]), 5, (255, 255, 255), -1)  # Draw target pixel
+                cv2.drawContours(frame, [route_vertices], -1, (0, 0, 255), 2)
             cv2.drawContours(frame, valid_vertices, -1, (0, 255, 0), 2)
-            cv2.drawContours(frame, [route_vertices], -1, (0, 0, 255), 2)
-            cv2.imshow('Processed Frame', white_frame)
-            cv2.imshow('Black Frame', black_frame)
+            if redx is not None and redy is not None:
+                cv2.circle(frame, (redx, redy), 5, (0, 255, 0), -1)  # Draw red laser point
+            # cv2.imshow('Processed Frame', white_frame)
+            # cv2.imshow('Black Frame', black_frame)
+            red_frame = cv2.resize(red_frame, (640, 360))  # Resize for better display
+            green_frame = cv2.resize(green_frame, (640, 360))  # Resize for better display
+            cv2.imshow('Red Frame', red_frame)
+            cv2.imshow('Green Frame', green_frame)
 
             # 显示图像
             frame = cv2.resize(frame, (640, 360))  # Resize for better display
-            # warped = cv2.resize(warped, (640, 360))  # Resize for better display
-            # edges = cv2.resize(edges, (640, 360))  # Resize for better display
-            # cv2.imshow('Edges', edges)
-            # cv2.imshow('Warped Frame', warped)
             cv2.imshow('Original Frame', frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
+    except KeyboardInterrupt:
+        print("Interrupted by user")
+    except Exception as e:
+        print(f"An error occurred: {e}")
     finally:
         cap.release()
         cv2.destroyAllWindows()
