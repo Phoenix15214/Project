@@ -84,9 +84,21 @@ def warp(frame, warped, vertice):
         print(f"Mean value too low: {mean_value}, skipping this contour.")
     return warped
 
+def get_target_pixel(route_vertices, phase, split):
+    start_vertice = route_vertices[phase][0]
+    end_vertice = route_vertices[(phase + 1) % 4][0]
+    target_pixel = []
+    targetx = int(start_vertice[0] + ((end_vertice[0] - start_vertice[0]) / 10) * split)
+    targety = int(start_vertice[1] + ((end_vertice[1] - start_vertice[1]) / 10) * split)
+    target_pixel.append(targetx)
+    target_pixel.append(targety)
+    return target_pixel
+    
+
 def main():
     # 打开摄像头
     cap = open_camera()
+    
     if cap is None:
         return
     ret, frame = cap.read()
@@ -95,6 +107,8 @@ def main():
         print("Failed to grab initial frame")
         cap.release()
         return
+    phase = 0
+    split = 0
     try:
         while True:
             # 获取图像
@@ -110,7 +124,14 @@ def main():
             valid_vertices = lb.Find_Poly(contours, shape=4, min_area=None, max_area=None, factor=0.1)
             valid_vertices = vertice_to_box(valid_vertices)
             route_vertices = get_route_vertices(valid_vertices)
-            warped = warp(frame, warped, valid_vertices[0])
+            if split >= 10:
+                split = 1
+                phase = (phase + 1) % 4
+            else:
+                split += 1
+            target_pixel = get_target_pixel(route_vertices, phase=phase, split=split)
+            # warped = warp(frame, warped, valid_vertices[0])
+            cv2.circle(frame, (target_pixel[0], target_pixel[1]), 5, (255, 255, 255), -1)  # Draw target pixel
             cv2.drawContours(frame, valid_vertices, -1, (0, 255, 0), 2)
             cv2.drawContours(frame, [route_vertices], -1, (0, 0, 255), 2)
             cv2.imshow('Processed Frame', white_frame)
@@ -118,10 +139,10 @@ def main():
 
             # 显示图像
             frame = cv2.resize(frame, (640, 360))  # Resize for better display
-            warped = cv2.resize(warped, (640, 360))  # Resize for better display
+            # warped = cv2.resize(warped, (640, 360))  # Resize for better display
             # edges = cv2.resize(edges, (640, 360))  # Resize for better display
             # cv2.imshow('Edges', edges)
-            cv2.imshow('Warped Frame', warped)
+            # cv2.imshow('Warped Frame', warped)
             cv2.imshow('Original Frame', frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
