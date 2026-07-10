@@ -117,47 +117,70 @@ def _find_intersection(line1, line2):
     return return_x, return_y
 
 def get_pixel_online(route_vertices, current_pixel, phase):
+    # 结束标志位，若距离足够近则进入下一个phase
+    ending = False
+    # 得到起点和终点
     start_vertice = route_vertices[phase][0]
     end_vertice = route_vertices[(phase + 1) % 4][0]
+    # 计算直线方程
     line1 = [start_vertice[0], start_vertice[1], end_vertice[0], end_vertice[1]]
     dx = line1[2] - line1[0]
     dy = line1[3] - line1[1]
     k = dy / dx if dx != 0 else float('inf')
-    line2 = [current_pixel[0], current_pixel[1], current_pixel[0] + 1, current_pixel[1] + k]
+    # 根据当前像素点和直线方程计算交点
+    if k == float('inf'):
+        line2 = [current_pixel[0], current_pixel[1], current_pixel[0], current_pixel[1] - 1]
+    elif k == 0:
+        line2 = [current_pixel[0], current_pixel[1], current_pixel[0] + 1, current_pixel[1]]
+    else:
+        line2 = [current_pixel[0], current_pixel[1], current_pixel[0] + 1, current_pixel[1] - (1 / k)]
     intersectionx, intersectiony = _find_intersection(line1, line2)
     direction_vector = np.array(end_vertice) - np.array(start_vertice)
     direction_vector = direction_vector / np.linalg.norm(direction_vector)  # Normalize
     step_size = 5  # Define how much to move in each iteration
+    # 得到目标像素
     next_pixel = np.array([intersectionx, intersectiony]) + direction_vector * step_size
+    # 计算移动向量
     move_vector = next_pixel - np.array(current_pixel)
     if np.linalg.norm(move_vector) < step_size:
-        return (np.array(end_vertice) -np.array(current_pixel)).astype(int).tolist()
+        ending = True
+        return (np.array(end_vertice) -np.array(current_pixel)).astype(int).tolist(), ending
     else:
-        return np.array(move_vector).astype(int).tolist()
+        return np.array(move_vector).astype(int).tolist(), ending
 
 def get_target_pixel_continuous(route_vertices, current_pixel, phase):
+    # 结束标志位，若距离足够近则进入下一个phase
+    ending = False
+    # 得到起点和终点
     start_vertice = route_vertices[phase][0]
     end_vertice = route_vertices[(phase + 1) % 4][0]
+    # 计算方向向量并归一化
     direction_vector = np.array(end_vertice) - np.array(start_vertice)
-    direction_vector = direction_vector / np.linalg.norm(direction_vector)  # Normalize
-    step_size = 5  # Define how much to move in each iteration
+    direction_vector = direction_vector / np.linalg.norm(direction_vector)
+    # 移动步长
+    step_size = 5
     if np.linalg.norm(np.array(current_pixel) - np.array(end_vertice)) < step_size:
-        return end_vertice.tolist()  # If close enough to the end, snap to it
+        ending = True
+        return end_vertice.tolist(), ending  # If close enough to the end, snap to it
     next_pixel = np.array(current_pixel) + direction_vector * step_size
-    return next_pixel.astype(int).tolist()
+    return next_pixel.astype(int).tolist(), ending
 
 def get_laser_point(img, last_red, last_green, threshold=10):
+    # 允许覆盖标志位，防止激光点覆盖时检测不到
     enable_cover = False
     if np.linalg.norm(np.array(last_red) - np.array(last_green)) < threshold:
         enable_cover = True
+    # 提取红色和绿色激光点
     red = lb.Color_Extraction(img, color=lb.RED)
     green = lb.Color_Extraction(img, color=lb.GREEN)
     red_contours = find_contours(red, min_area=MIN_LASER_AREA, max_area=MAX_LASER_AREA)
     green_contours = find_contours(green, min_area=MIN_LASER_AREA, max_area=MAX_LASER_AREA)
+    # 如果没有检测到激光点，则使用上一次的激光点位置
     if red_contours is None or len(red_contours) == 0:
         red_center = last_red
     if green_contours is None or len(green_contours) == 0:
         green_center = last_green
+    # 如果激光点被覆盖，则使用另一种颜色的激光点位置
     if enable_cover and len(red_contours) == 0 and len(green_contours) != 0:
         red_contours = green_contours
     elif enable_cover and len(green_contours) == 0 and len(red_contours) != 0:
@@ -167,7 +190,6 @@ def get_laser_point(img, last_red, last_green, threshold=10):
     return red_center, green_center
 
 def main():
-    print(len([]))
     # 打开摄像头
     cap = open_camera()
     
