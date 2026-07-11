@@ -110,12 +110,16 @@ def get_target_pixel(route_vertices, phase, split):
     return target_pixel
 
 def _find_intersection(line1, line2):
-    x1, y1, x2, y2, dx1, dy1, length1 = line1
-    x3, y3, x4, y4, dx2, dy2, length2 = line2
+    x1, y1, x2, y2 = line1
+    x3, y3, x4, y4 = line2
+    dx1 = x2 - x1
+    dy1 = y2 - y1
+    dx2 = x4 - x3
+    dy2 = y4 - y3
 
     denom = dy2 * dx1 - dx2 * dy1
     if abs(denom) < 1e-6:
-        return None
+        return None, None
 
     ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom
     ub = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denom
@@ -123,8 +127,8 @@ def _find_intersection(line1, line2):
     eps = 1e-6
     return_x = int(x1 + ua * (x2 - x1))
     return_y = int(y1 + ua * (y2 - y1))
-    if return_x < 0 or return_x >= 640 or return_y < 0 or return_y >= 480:
-        return None
+    if return_x < 0 or return_x >= CAMERA_WIDTH or return_y < 0 or return_y >= CAMERA_HEIGHT:
+        return None, None
 
     return return_x, return_y
 
@@ -147,10 +151,14 @@ def get_pixel_online(route_vertices, current_pixel, phase):
     else:
         line2 = [current_pixel[0], current_pixel[1], current_pixel[0] + 1, current_pixel[1] - (1 / k)]
     intersectionx, intersectiony = _find_intersection(line1, line2)
+    # 目标点方向向量
     direction_vector = np.array(end_vertice) - np.array(start_vertice)
-    direction_vector = direction_vector / np.linalg.norm(direction_vector)  # Normalize
-    step_size = 5  # Define how much to move in each iteration
-    # 得到目标像素
+    direction_vector = direction_vector / np.linalg.norm(direction_vector)
+    # 移动步长
+    step_size = 5
+    # 得到目标像素,当没有算出交点时停留在当前像素
+    if intersectionx is None or intersectiony is None:
+        return (current_pixel[0], current_pixel[1]), ending
     next_pixel = np.array([intersectionx, intersectiony]) + direction_vector * step_size
     # 计算移动向量
     move_vector = next_pixel - np.array(current_pixel)
@@ -217,16 +225,19 @@ def get_laser_point_simultaneous(img, last_red, last_green, threshold=10):
     return red_center, green_center
 
 def get_laser_point_via_white(white_frame, red_frame, green_frame):
+    # 寻找并筛选轮廓
     probable_contours = find_contours(white_frame, min_area=MIN_LASER_AREA, max_area=MAX_LASER_AREA)
     probable_centers = []
     probable_rois = []
     probable_reds = []
     probable_greens = []
 
+    # 得到轮廓中心
     for contour in probable_contours:
         contourx, contoury = lb._cal_single_center(contour)
         if contourx > 0 and contoury > 0:
             probable_centers.append((contourx, contoury))
+    # 根据轮廓中心在红色和绿色图像中提取ROI，并计算非零像素数量，找出红色和绿色激光点
     for center in probable_centers:
         x, y = center
         roi_size = 40
@@ -247,6 +258,7 @@ def get_laser_point_via_white(white_frame, red_frame, green_frame):
         elif green_count > 0 and red_count == 0:
             probable_greens.append((center, green_count))
     
+    # 根据非零像素数量排序，选择数量最多的作为激光点
     probable_reds.sort(key=lambda x: x[1], reverse=True)
     probable_greens.sort(key=lambda x: x[1], reverse=True)
 
@@ -255,9 +267,9 @@ def get_laser_point_via_white(white_frame, red_frame, green_frame):
     return red_center, green_center
 
 def main(conn=None):
+    # 显示FPS
     last_time = time.time()
     current_time = time.time()
-    start_time = time.time()
     fps = 0
     frame_count = 0
     # 打开摄像头
@@ -271,7 +283,6 @@ def main(conn=None):
         cap.release()
         return
     phase = 0
-    split = 0
     try:
         while True:
             route_vertices = []
@@ -293,29 +304,26 @@ def main(conn=None):
             # 筛选轮廓
             valid_vertices = lb.Find_Poly(black_contours, shape=4, min_area=None, max_area=None, factor=0.1)
             valid_vertices = vertice_to_box(valid_vertices)
+            # 如果检测到有效轮廓，则进行路径计算
             if len(valid_vertices) > 1:
                 route_vertices = get_route_vertices(valid_vertices)
-                if split >= 10:
-                    split = 1
-                    phase = (phase + 1) % 4
-                else:
-                    split += 1
+            # 如果得到了有效的轨迹顶点，则计算目标像素点，并在图像上绘制
             if len(route_vertices) > 0:
-                target_pixel = get_target_pixel(route_vertices, phase=phase, split=split)
-                # warped = warp(frame, warped, valid_vertices[0])
+                target_pixel, ending = get_pixel_online(route_vertices, current_pixel=[redx, redy], phase=phase)
+                if ending:
+                    phase = (phase + 1) % 4
                 cv2.circle(frame, (target_pixel[0], target_pixel[1]), 5, (255, 255, 255), -1)  # Draw target pixel
                 cv2.drawContours(frame, [route_vertices], -1, (0, 0, 255), 2)
+            # 画出轮廓和激光点
             cv2.drawContours(frame, valid_vertices, -1, (0, 255, 0), 2)
             if redx is not None and redy is not None:
-                cv2.circle(frame, (redx, redy), 5, (0, 255, 0), -1)  # Draw red laser point
-            # cv2.imshow('Processed Frame', white_frame)
-            # cv2.imshow('Black Frame', black_frame)
+                cv2.circle(frame, (redx, redy), 5, (0, 0, 255), -1)
+            # 进行数据发送
             if conn is not None:
                 msg = [0, redx, redy, target_pixel[0], target_pixel[1]]
                 conn.send(msg)
 
             # 显示图像
-            # start_time = time.time()
             # white_frame = cv2.resize(white_frame, (640, 360))  # Resize for better display
             # frame = cv2.resize(frame, (640, 360))  # Resize for better display
             # red_frame = cv2.resize(red_frame, (640, 360))  # Resize for better display
@@ -326,7 +334,6 @@ def main(conn=None):
             # cv2.imshow('Original Frame', frame)
             # if cv2.waitKey(1) & 0xFF == ord('q'):
             #     break
-            # print(f"Frame processed in {time.time() - start_time:.4f} seconds")
             frame_count += 1
             current_time = time.time()
             if current_time - last_time >= 1.0:
