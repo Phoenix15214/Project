@@ -6,11 +6,11 @@ import struct
 import time
 import os
 
-message = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+message = [0, 0, 0, 0]
 # target_location = [0, 0, 0, 0] # 检测到目标的x坐标，未检测到时为0
 server_socket = None
 isConnected = False
-pack = ctrl.SerialPacket(port="/dev/ttyUSB0", baudrate=38400, timeout=0.1)
+pack = ctrl.SerialPacket(port="/dev/ttyUSB0", baudrate=115200, timeout=0.1)
 last_send_time = 0
 
 def Parse_Input(msg):
@@ -38,19 +38,13 @@ def _send_by_justfloat(data_list, socket):
     socket.send(packed_data + tail)
 
 def process_msg(message, msg):
-    if msg[0] == 0: # 来自track.py的消息
-            message[0] = msg[1] # 循迹偏离角度
-            message[1] = msg[2] # 循迹线偏离中心x坐标
-            message[2] = msg[3] # 路口x坐标
-            message[3] = msg[4] # 路口y坐标
-            message[8] = msg[5] # 终点x坐标
-            message[9] = msg[6] # 终点y坐标
-            message[10] = msg[7] # 是否垂直路口
-    elif msg[0] == 1: # 来自detect.py的消息
-            message[4] = msg[1] # 四个目标的类别ID
-            message[5] = msg[2]
-            message[6] = msg[3]
-            message[7] = msg[4]
+    if len(msg) < 5:
+        return
+    if msg[0] == 0:
+        message[0] = msg[1] # redx
+        message[1] = msg[2] # redy
+        message[2] = msg[3] # target_pixel[0]
+        message[3] = msg[4] # target_pixel[1]
 
 def _send_thread(conn, method, socket, stop_event):
     global pack
@@ -63,9 +57,9 @@ def _send_thread(conn, method, socket, stop_event):
         except EOFError:
             break
         process_msg(message, msg)
-        pack.insert_byte(0x16)  # 包头
-        for i in range(11):
-            pack.insert_two_bytes(pack.num_to_bytes(message[i]))
+        pack.insert_byte(0x04)  # 包头
+        for i in range(4):
+            pack.insert_three_bytes(pack.num_to_bytes(message[i]))
         pack.send_packet() # 发送数据包
         try:
             if method == "firewater":
@@ -121,9 +115,9 @@ def Empty_Thread(conn, stop_event):
             except EOFError:
                 break
             process_msg(message, msg)
-            pack.insert_byte(0x16)  # 包头
-            for i in range(11):
-                pack.insert_two_bytes(pack.num_to_bytes(message[i]))
+            pack.insert_byte(0x04)  # 包头
+            for i in range(4):
+                pack.insert_three_bytes(pack.num_to_bytes(message[i]))
             pack.send_packet() # 发送数据包
 
 

@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import process_lib.image_lib as lb
 import process_lib.control_lib as ctrl
-from multiprocessing import shared_memory, Value
+from multiprocessing import shared_memory, Value, Pipe
 import time
 import math
 import os
@@ -12,7 +12,7 @@ CAMERA_WIDTH = 1280 # 1080p 1920*1080
 CAMERA_HEIGHT = 720 # 1080p 1920*1080
 MIN_AREA = 5000
 MAX_AREA = 500000
-MIN_LASER_AREA = 50
+MIN_LASER_AREA = 10
 MAX_LASER_AREA = 5000
 white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
 
@@ -24,7 +24,7 @@ def open_camera():
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
         cap.set(cv2.CAP_PROP_EXPOSURE, 20)
         actual_auto_exp = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
         actual_exp = cap.get(cv2.CAP_PROP_EXPOSURE)
@@ -38,11 +38,11 @@ def open_camera():
 # 预处理图像，返回纯白色图像
 def preprocess_frame(frame):
     img_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    white_mask = cv2.inRange(img_hsv, (0, 0, 150), (180, 30, 255))
+    white_mask = cv2.inRange(img_hsv, (0, 0, 245), (180, 2, 255))
     black_mask = cv2.inRange(img_hsv, (0, 0, 0), (180, 255, 100))
-    red_mask1 = cv2.inRange(img_hsv, (0, 43, 46), (10, 255, 255))
-    red_mask2 = cv2.inRange(img_hsv, (156, 43, 46), (180, 255, 255))
-    green_mask = cv2.inRange(img_hsv, (35, 43, 46), (85, 255, 255))
+    red_mask1 = cv2.inRange(img_hsv, (0, 50, 50), (12, 255, 255))
+    red_mask2 = cv2.inRange(img_hsv, (168, 50, 50), (180, 255, 255))
+    green_mask = cv2.inRange(img_hsv, (60, 50, 50), (80, 255, 255))
     red_mask = cv2.bitwise_or(red_mask1, red_mask2)
     red_frame = cv2.bitwise_and(white, white, mask=red_mask)
     green_frame = cv2.bitwise_and(white, white, mask=green_mask)
@@ -216,10 +216,52 @@ def get_laser_point_simultaneous(img, last_red, last_green, threshold=10):
     green_center = lb.Get_Center_Point(green_contours, mode=lb.CENTER_MAX)
     return red_center, green_center
 
-def main():
+def get_laser_point_via_white(white_frame, red_frame, green_frame):
+    probable_contours = find_contours(white_frame, min_area=MIN_LASER_AREA, max_area=MAX_LASER_AREA)
+    probable_centers = []
+    probable_rois = []
+    probable_reds = []
+    probable_greens = []
+
+    for contour in probable_contours:
+        contourx, contoury = lb._cal_single_center(contour)
+        if contourx > 0 and contoury > 0:
+            probable_centers.append((contourx, contoury))
+    for center in probable_centers:
+        x, y = center
+        roi_size = 40
+        red_roi = red_frame[max(0, y - roi_size):min(white_frame.shape[0], y + roi_size),
+                            max(0, x - roi_size):min(white_frame.shape[1], x + roi_size)]
+        green_roi = green_frame[max(0, y - roi_size):min(white_frame.shape[0], y + roi_size),
+                                max(0, x - roi_size):min(white_frame.shape[1], x + roi_size)]
+        # red_count = cv2.countNonZero(red_roi)
+        red_count = 100
+        green_count = cv2.countNonZero(green_roi)
+        if red_count > 0 and green_count > 0:
+            if red_count > green_count:
+                probable_reds.append((center, red_count))
+            else:
+                probable_greens.append((center, green_count))
+        elif red_count > 0 and green_count == 0:
+            probable_reds.append((center, red_count))
+        elif green_count > 0 and red_count == 0:
+            probable_greens.append((center, green_count))
+    
+    probable_reds.sort(key=lambda x: x[1], reverse=True)
+    probable_greens.sort(key=lambda x: x[1], reverse=True)
+
+    red_center = probable_reds[0][0] if probable_reds else (0, 0)
+    green_center = probable_greens[0][0] if probable_greens else (0, 0)
+    return red_center, green_center
+
+def main(conn=None):
+    last_time = time.time()
+    current_time = time.time()
+    start_time = time.time()
+    fps = 0
+    frame_count = 0
     # 打开摄像头
     cap = open_camera()
-    
     if cap is None:
         return
     ret, frame = cap.read()
@@ -233,24 +275,24 @@ def main():
     try:
         while True:
             route_vertices = []
+            target_pixel = [0, 0]
             # 获取图像
             _, frame = cap.read()
-            # frame = cv2.imread("black.jpg")
-            # frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))  # Resize for consistency
+            frame = frame[400:700, 500:800]
+            frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
             # 预处理
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             # 寻找轮廓(包含尺寸筛选)
-            white_frame, black_frame, red_frame, green_frame = preprocess_frame(frame)
+            white_frame, black_frame, red_frame, green_frame= preprocess_frame(frame)
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            red_frame = cv2.morphologyEx(red_frame, cv2.MORPH_OPEN, kernel, iterations=1)
-            red_frame = cv2.morphologyEx(red_frame, cv2.MORPH_CLOSE, kernel, iterations=1)
-            redx, redy = get_laser_point(red_frame)
+            white_frame = cv2.morphologyEx(white_frame, cv2.MORPH_CLOSE, kernel, iterations=1)
+            red_center, green_center = get_laser_point_via_white(white_frame, red_frame, green_frame)
+            redx, redy = red_center
+            greenx, greeny = green_center
             black_contours = find_contours(black_frame)
             # 筛选轮廓
             valid_vertices = lb.Find_Poly(black_contours, shape=4, min_area=None, max_area=None, factor=0.1)
-            # print(len(valid_vertices))
             valid_vertices = vertice_to_box(valid_vertices)
-            # print(len(valid_vertices))
             if len(valid_vertices) > 1:
                 route_vertices = get_route_vertices(valid_vertices)
                 if split >= 10:
@@ -268,16 +310,31 @@ def main():
                 cv2.circle(frame, (redx, redy), 5, (0, 255, 0), -1)  # Draw red laser point
             # cv2.imshow('Processed Frame', white_frame)
             # cv2.imshow('Black Frame', black_frame)
-            red_frame = cv2.resize(red_frame, (640, 360))  # Resize for better display
-            green_frame = cv2.resize(green_frame, (640, 360))  # Resize for better display
-            cv2.imshow('Red Frame', red_frame)
-            cv2.imshow('Green Frame', green_frame)
+            if conn is not None:
+                msg = [0, redx, redy, target_pixel[0], target_pixel[1]]
+                conn.send(msg)
 
             # 显示图像
-            frame = cv2.resize(frame, (640, 360))  # Resize for better display
-            cv2.imshow('Original Frame', frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # start_time = time.time()
+            # white_frame = cv2.resize(white_frame, (640, 360))  # Resize for better display
+            # frame = cv2.resize(frame, (640, 360))  # Resize for better display
+            # red_frame = cv2.resize(red_frame, (640, 360))  # Resize for better display
+            # # green_frame = cv2.resize(green_frame, (640, 360))  # Resize for better display
+            # # cv2.imshow('White Frame', white_frame)
+            # cv2.imshow('Red Frame', red_frame)
+            # # cv2.imshow('Green Frame', green_frame)
+            # cv2.imshow('Original Frame', frame)
+            # if cv2.waitKey(1) & 0xFF == ord('q'):
+            #     break
+            # print(f"Frame processed in {time.time() - start_time:.4f} seconds")
+            frame_count += 1
+            current_time = time.time()
+            if current_time - last_time >= 1.0:
+                fps = frame_count / (current_time - last_time)
+                print(f"FPS: {fps:.2f}")
+                frame_count = 0
+                last_time = current_time
+    
     except KeyboardInterrupt:
         print("Interrupted by user")
     except Exception as e:
