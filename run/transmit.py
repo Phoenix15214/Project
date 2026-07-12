@@ -59,6 +59,9 @@ def _send_thread(conn, method, socket, stop_event):
         process_msg(message, msg)
         pack.insert_byte(0x04)  # 包头
         for i in range(4):
+            if message[i] >= 65535 or message[i] < 0:
+                message[i] = 0
+                print(f"Warning: message[{i}] value {message[i]} is out of range. Resetting to 0.")
             pack.insert_three_bytes(pack.num_to_bytes(message[i]))
         pack.send_packet() # 发送数据包
         try:
@@ -117,6 +120,9 @@ def Empty_Thread(conn, stop_event):
             process_msg(message, msg)
             pack.insert_byte(0x04)  # 包头
             for i in range(4):
+                if message[i] >= 65535 or message[i] < 0:
+                    message[i] = 0
+                    print(f"Warning: message[{i}] value {message[i]} is out of range. Resetting to 0.")
                 pack.insert_three_bytes(pack.num_to_bytes(message[i]))
             pack.send_packet() # 发送数据包
 

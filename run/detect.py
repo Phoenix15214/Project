@@ -10,8 +10,10 @@ import os
 CAMERA_FPS = 30
 CAMERA_WIDTH = 1280 # 1080p 1920*1080
 CAMERA_HEIGHT = 720 # 1080p 1920*1080
-MIN_AREA = 5000
-MAX_AREA = 500000
+FRAME_CENTER_X = CAMERA_WIDTH // 2
+FRAME_CENTER_Y = CAMERA_HEIGHT // 2
+MIN_AREA = 35000
+MAX_AREA = 70000
 MIN_LASER_AREA = 10
 MAX_LASER_AREA = 5000
 white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
@@ -77,10 +79,16 @@ def get_route_vertices(vertices):
 def vertice_to_box(vertices):
     boxes = []
     for vertice in vertices:
+        centerx, centery = lb._cal_single_center(vertice)
+        distance = np.linalg.norm(np.array([centerx, centery]) - np.array([FRAME_CENTER_X, FRAME_CENTER_Y]))
+        if distance > 200:
+            continue
         box = vertice.reshape(-1, 2) # Reshape to (4, 2)
         box = np.int32(box)
         box = ctrl.Reorder_Vertex_Pole(box)
         boxes.append(box)
+    if len(boxes) == 1:
+        boxes.append(boxes[0])
     return boxes
 
 # 透视变换
@@ -165,6 +173,8 @@ def get_pixel_online(route_vertices, current_pixel, phase):
     if np.linalg.norm(move_vector) < step_size:
         ending = True
         return (np.array(end_vertice) -np.array(current_pixel)).astype(int).tolist(), ending
+    elif np.linalg.norm(move_vector) > 100:
+        return np.array([0, 0]).astype(int).tolist(), ending
     else:
         return np.array(move_vector).astype(int).tolist(), ending
 
@@ -245,8 +255,8 @@ def get_laser_point_via_white(white_frame, red_frame, green_frame):
                             max(0, x - roi_size):min(white_frame.shape[1], x + roi_size)]
         green_roi = green_frame[max(0, y - roi_size):min(white_frame.shape[0], y + roi_size),
                                 max(0, x - roi_size):min(white_frame.shape[1], x + roi_size)]
-        # red_count = cv2.countNonZero(red_roi)
-        red_count = 100
+        red_count = cv2.countNonZero(red_roi)
+        # red_count = 100
         green_count = cv2.countNonZero(green_roi)
         if red_count > 0 and green_count > 0:
             if red_count > green_count:
@@ -289,8 +299,8 @@ def main(conn=None):
             target_pixel = [0, 0]
             # 获取图像
             _, frame = cap.read()
-            frame = frame[400:700, 500:800]
-            frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
+            # frame = frame[400:700, 500:800]
+            # frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
             # 预处理
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             # 寻找轮廓(包含尺寸筛选)
@@ -302,13 +312,14 @@ def main(conn=None):
             greenx, greeny = green_center
             black_contours = find_contours(black_frame)
             # 筛选轮廓
-            valid_vertices = lb.Find_Poly(black_contours, shape=4, min_area=None, max_area=None, factor=0.1)
+            valid_vertices = lb.Find_Poly(black_contours, shape=4, factor=0.1)
+            # 将轮廓顶点转换为矩形框，此处包含了对轮廓中心点距离图像中心的筛选
             valid_vertices = vertice_to_box(valid_vertices)
             # 如果检测到有效轮廓，则进行路径计算
             if len(valid_vertices) > 1:
                 route_vertices = get_route_vertices(valid_vertices)
             # 如果得到了有效的轨迹顶点，则计算目标像素点，并在图像上绘制
-            if len(route_vertices) > 0:
+            if len(route_vertices) > 0 and redx != 0 and redy != 0:
                 target_pixel, ending = get_pixel_online(route_vertices, current_pixel=[redx, redy], phase=phase)
                 if ending:
                     phase = (phase + 1) % 4
@@ -316,7 +327,7 @@ def main(conn=None):
                 cv2.drawContours(frame, [route_vertices], -1, (0, 0, 255), 2)
             # 画出轮廓和激光点
             cv2.drawContours(frame, valid_vertices, -1, (0, 255, 0), 2)
-            if redx is not None and redy is not None:
+            if redx != 0 and redy != 0:
                 cv2.circle(frame, (redx, redy), 5, (0, 0, 255), -1)
             # 进行数据发送
             if conn is not None:
@@ -325,15 +336,15 @@ def main(conn=None):
 
             # 显示图像
             # white_frame = cv2.resize(white_frame, (640, 360))  # Resize for better display
-            # frame = cv2.resize(frame, (640, 360))  # Resize for better display
+            frame = cv2.resize(frame, (640, 360))  # Resize for better display
             # red_frame = cv2.resize(red_frame, (640, 360))  # Resize for better display
             # # green_frame = cv2.resize(green_frame, (640, 360))  # Resize for better display
-            # # cv2.imshow('White Frame', white_frame)
+            # cv2.imshow('White Frame', white_frame)
             # cv2.imshow('Red Frame', red_frame)
             # # cv2.imshow('Green Frame', green_frame)
-            # cv2.imshow('Original Frame', frame)
-            # if cv2.waitKey(1) & 0xFF == ord('q'):
-            #     break
+            cv2.imshow('Original Frame', frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
             frame_count += 1
             current_time = time.time()
             if current_time - last_time >= 1.0:
