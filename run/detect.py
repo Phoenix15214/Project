@@ -42,8 +42,8 @@ def preprocess_frame(frame):
     img_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     white_mask = cv2.inRange(img_hsv, (0, 0, 240), (180, 15, 255))
     black_mask = cv2.inRange(img_hsv, (0, 0, 0), (180, 255, 100))
-    red_mask1 = cv2.inRange(img_hsv, (0, 50, 50), (12, 255, 255))
-    red_mask2 = cv2.inRange(img_hsv, (168, 50, 50), (180, 255, 255))
+    red_mask1 = cv2.inRange(img_hsv, (0, 25, 50), (15, 255, 255))
+    red_mask2 = cv2.inRange(img_hsv, (165, 25, 50), (180, 255, 255))
     green_mask = cv2.inRange(img_hsv, (60, 50, 50), (80, 255, 255))
     red_mask = cv2.bitwise_or(red_mask1, red_mask2)
     red_frame = cv2.bitwise_and(white, white, mask=red_mask)
@@ -180,6 +180,8 @@ def get_pixel_online(route_vertices, current_pixel, phase):
 
 def get_target_pixel_pole(laser_point, center_point, binary, step=0.05): # step为弧度制
     lx, ly = laser_point
+    if lx == 0 and ly == 0:
+        return (0, 0)
     cx, cy = center_point
     h, w = binary.shape
     theta = math.atan2(cy - ly, cx - lx)
@@ -253,7 +255,7 @@ def get_laser_point_simultaneous(img, last_red, last_green, threshold=10):
     green_center = lb.Get_Center_Point(green_contours, mode=lb.CENTER_MAX)
     return red_center, green_center
 
-def get_laser_point_via_white(white_frame, red_frame, green_frame, last_red, last_green):
+def get_laser_point_via_white(white_frame, red_frame, green_frame, red, green, last_red, last_green, roi_start, roi_end):
     # 寻找并筛选轮廓
     probable_contours = find_contours(white_frame, min_area=MIN_LASER_AREA, max_area=MAX_LASER_AREA)
     probable_centers = []
@@ -289,12 +291,12 @@ def get_laser_point_via_white(white_frame, red_frame, green_frame, last_red, las
     probable_reds.sort(key=lambda x: x[1], reverse=True)
     probable_greens.sort(key=lambda x: x[1], reverse=True)
 
-    red_center = probable_reds[0][0] if probable_reds else (0, 0)
-    green_center = probable_greens[0][0] if probable_greens else (0, 0)
+    red_center = (probable_reds[0][0][0] + roi_start[0], probable_reds[0][0][1] + roi_start[1]) if probable_reds else (0, 0)
+    green_center = (probable_greens[0][0][0] + roi_start[0], probable_greens[0][0][1] + roi_start[1]) if probable_greens else (0, 0)
     roi_size = 40
     if red_center[0] == 0 and red_center[1] == 0:
-        roi_red = red_frame[max(0, last_red[1] - roi_size):min(red_frame.shape[0], last_red[1] + roi_size),
-                        max(0, last_red[0] - roi_size):min(red_frame.shape[1], last_red[0] + roi_size)]
+        roi_red = red[max(0, last_red[1] - roi_size):min(red.shape[0], last_red[1] + roi_size),
+                        max(0, last_red[0] - roi_size):min(red.shape[1], last_red[0] + roi_size)]
         if cv2.countNonZero(roi_red) > 0:
             M = cv2.moments(roi_red)
             if M["m00"] != 0:
@@ -302,8 +304,8 @@ def get_laser_point_via_white(white_frame, red_frame, green_frame, last_red, las
                 cY = int(M["m01"] / M["m00"]) + max(0, last_red[1] - roi_size)
                 red_center = (cX, cY)
     if green_center[0] == 0 and green_center[1] == 0:
-        roi_green = green_frame[max(0, last_green[1] - roi_size):min(green_frame.shape[0], last_green[1] + roi_size),
-                                max(0, last_green[0] - roi_size):min(green_frame.shape[1], last_green[0] + roi_size)]
+        roi_green = green[max(0, last_green[1] - roi_size):min(green.shape[0], last_green[1] + roi_size),
+                                max(0, last_green[0] - roi_size):min(green.shape[1], last_green[0] + roi_size)]
         if cv2.countNonZero(roi_green) > 0:
             M = cv2.moments(roi_green)
             if M["m00"] != 0:
@@ -354,6 +356,9 @@ def main(conn=None):
             target_pixel = (0, 0)
             bounding_rect = None
             roi_center = (0, 0)
+            redx, redy = 0, 0
+            greenx, greeny = 0, 0
+            last_valid_vertices = []
             # 获取图像
             _, frame = cap.read()
             # frame = cv2.imread("black.jpg")
@@ -369,16 +374,13 @@ def main(conn=None):
             black_frame = cv2.morphologyEx(black_frame, cv2.MORPH_CLOSE, kernel, iterations=5)
             black_roi = black_frame
             red_roi = red_frame
-            red_center, green_center = get_laser_point_via_white(white_frame, red_frame, green_frame, last_red, last_green)
-            redx, redy = red_center
-            greenx, greeny = green_center
-            last_red = red_center
-            last_green = green_center
+            green_roi = green_frame
             black_contours = find_contours(black_frame)
             # 筛选轮廓
             valid_vertices = lb.Find_Poly(black_contours, shape=4, factor=0.1)
             # 将轮廓顶点转换为矩形框，此处包含了对轮廓中心点距离图像中心的筛选
             valid_vertices = vertice_to_box(valid_vertices)
+            last_valid_vertices = valid_vertices
             if len(valid_vertices) > 1:
                 bounding_rect = cv2.boundingRect(np.concatenate(valid_vertices))
                 if bounding_rect[0] < 0 or bounding_rect[1] < 0 or bounding_rect[0] + bounding_rect[2] > CAMERA_WIDTH or bounding_rect[1] + bounding_rect[3] > CAMERA_HEIGHT:
@@ -388,7 +390,15 @@ def main(conn=None):
                 x1, y1, x2, y2 = get_roi_boundary(bounding_rect, roi_size=20)
                 black_roi = black_frame[y1:y2, x1:x2]
                 red_roi = red_frame[y1:y2, x1:x2]
-                skeleton = cv2.ximgproc.thinning(black_roi)
+                white_roi = white_frame[y1:y2, x1:x2]
+                green_roi = green_frame[y1:y2, x1:x2]
+                red_center, green_center = get_laser_point_via_white(white_roi, red_roi, green_roi, red_frame, green_frame, last_red, last_green, (x1, y1), (x2, y2))
+                redx, redy = red_center
+                greenx, greeny = green_center
+                last_red = red_center
+                last_green = green_center
+                skeleton = cv2.ximgproc.thinning(cv2.resize(black_roi, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA))
+                skeleton = cv2.resize(skeleton, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
                 skeleton = cv2.dilate(skeleton, kernel, iterations=1)
                 # pruned_skeleton = prune_skeleton(skeleton, min_length=100) if skeleton is not None else None
                 route_contour = cv2.findContours(skeleton, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
@@ -397,12 +407,13 @@ def main(conn=None):
                 roi_center = (roi_w // 2, roi_h // 2)
                 # 如果检测到有效轮廓，则进行路径计算
                 if len(valid_vertices) > 1:
-                    target_pixel = get_target_pixel_pole((redx - x1, redy - y1), roi_center, skeleton, step=0.05)
-                    cv2.circle(frame, (target_pixel[0] + x1, target_pixel[1] + y1), 5, (255, 255, 255), -1) if bounding_rect is not None else None
-            # 画出轮廓和激光点
-            cv2.drawContours(frame, valid_vertices, -1, (0, 255, 0), 2)
-            if redx != 0 and redy != 0:
-                cv2.circle(frame, (redx, redy), 5, (0, 0, 255), -1)
+                    target_pixel = get_target_pixel_pole((redx - x1, redy - y1), roi_center, skeleton, step=0.1) if redx != 0 and redy != 0 else (0, 0)
+                    target_pixel = (target_pixel[0] + x1, target_pixel[1] + y1) if target_pixel != (0, 0) else (0, 0)
+                    cv2.circle(frame, (target_pixel[0], target_pixel[1]), 5, (255, 255, 255), -1) if target_pixel != (0, 0) else None
+                # 画出轮廓和激光点
+                # cv2.drawContours(frame, valid_vertices, -1, (0, 255, 0), 2)
+                if redx != 0 and redy != 0:
+                    cv2.circle(frame, (redx, redy), 5, (0, 0, 255), -1)
             # 进行数据发送
             if conn is not None:
                 msg = [0, redx, redy, target_pixel[0], target_pixel[1]]
@@ -411,19 +422,19 @@ def main(conn=None):
             # 显示图像
             # white_frame = cv2.resize(white_frame, (640, 360))  # Resize for better display
             # black_frame = cv2.resize(black_frame, (640, 360))  # Resize for better display
-            frame = cv2.resize(frame, (640, 360))  # Resize for better display
+            # frame = cv2.resize(frame, (640, 360))  # Resize for better display
             # red_frame = cv2.resize(red_frame, (640, 360))  # Resize for better display
             # green_frame = cv2.resize(green_frame, (640, 360))  # Resize for better display
             # cv2.imshow('White Frame', white_frame)
             # cv2.imshow('Red Frame', red_frame)
             # cv2.imshow('Black Frame', black_frame)
             # cv2.imshow('Green Frame', green_frame)
-            black_roi = cv2.resize(black_roi, (640, 360))  # Resize for better display
-            cv2.imshow('Black ROI', black_roi)
-            cv2.imshow('Original Frame', frame)
+            # black_roi = cv2.resize(black_roi, (640, 360))  # Resize for better display
+            # cv2.imshow('Black ROI', black_roi)
+            # cv2.imshow('Original Frame', frame)
             # cv2.imshow("Skeleton", skeleton)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # if cv2.waitKey(1) & 0xFF == ord('q'):
+            #     break
             frame_count += 1
             current_time = time.time()
             if current_time - last_time >= 1.0:
