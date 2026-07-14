@@ -422,7 +422,7 @@ def main(conn=None):
             # 显示图像
             # white_frame = cv2.resize(white_frame, (640, 360))  # Resize for better display
             # black_frame = cv2.resize(black_frame, (640, 360))  # Resize for better display
-            # frame = cv2.resize(frame, (640, 360))  # Resize for better display
+            frame = cv2.resize(frame, (640, 360))  # Resize for better display
             # red_frame = cv2.resize(red_frame, (640, 360))  # Resize for better display
             # green_frame = cv2.resize(green_frame, (640, 360))  # Resize for better display
             # cv2.imshow('White Frame', white_frame)
@@ -431,10 +431,10 @@ def main(conn=None):
             # cv2.imshow('Green Frame', green_frame)
             # black_roi = cv2.resize(black_roi, (640, 360))  # Resize for better display
             # cv2.imshow('Black ROI', black_roi)
-            # cv2.imshow('Original Frame', frame)
+            cv2.imshow('Original Frame', frame)
             # cv2.imshow("Skeleton", skeleton)
-            # if cv2.waitKey(1) & 0xFF == ord('q'):
-            #     break
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
             frame_count += 1
             current_time = time.time()
             if current_time - last_time >= 1.0:
