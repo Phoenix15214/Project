@@ -27,8 +27,7 @@ def _init_pack(port="/dev/ttyUSB0", baudrate=115200):
     try:
         pack = ctrl.SerialPacket(port=port, baudrate=baudrate, timeout=0.1)
     except Exception as exc:
-        print("无法打开串口")
-        pack = None
+        raise RuntimeError(f"无法打开串口: {exc}")
     return pack
 
 def init_message(length):
@@ -76,9 +75,7 @@ async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_ser
     while conn is not None:
         try:
             # 等待管道中有数据可读
-            print("正在等待消息")
             msg = await asyncio.to_thread(conn.recv)
-            print("收到消息:", msg)
             message = msg
             send_ready_network.set()  # 设置事件，表示有新消息可发送
             send_ready_serial.set()  # 设置事件，表示有新消息可发送
@@ -104,8 +101,7 @@ async def Send_Network(method, send_ready:asyncio.Event):
             send_ready.clear()
     send_ready.clear()
 
-async def Send_Serial(send_ready: asyncio.Event):
-    global pack
+async def Send_Serial(pack, send_ready: asyncio.Event):
     global message
     while True:
         try:
@@ -154,10 +150,9 @@ async def Recv_Network(require_refresh: asyncio.Event, Connected: asyncio.Event)
         Connected.clear()
     Connected.clear()
 
-async def Recv_Serial(require_refresh: asyncio.Event):
+async def Recv_Serial(pack, require_refresh: asyncio.Event):
     global config
     global config_data
-    global pack
     while pack is not None:
         try:
             msg_ready = await asyncio.to_thread(pack.recv_packet, 0.02)
@@ -191,7 +186,7 @@ async def Tik_Tok(send_ready_network: asyncio.Event, send_ready_serial: asyncio.
         send_ready_network.set()
         send_ready_serial.set()
 
-async def main_task(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"):
+async def main(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"):
     global pack
     global server_socket
     global message
@@ -212,9 +207,9 @@ async def main_task(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloa
     tasks = [
         asyncio.create_task(Aquire_Message(conn, send_ready_network, send_ready_serial)), # 从管道获取消息
         asyncio.create_task(Send_Network(method, send_ready_network)), # 发送消息到网络
-        asyncio.create_task(Send_Serial(send_ready_serial)), # 发送消息到串口
+        asyncio.create_task(Send_Serial(pack, send_ready_serial)), # 发送消息到串口
         asyncio.create_task(Recv_Network(require_refresh, Connected)), # 从网络接收配置更新
-        asyncio.create_task(Recv_Serial(require_refresh)), # 从串口接收配置更新
+        asyncio.create_task(Recv_Serial(pack, require_refresh)), # 从串口接收配置更新
         asyncio.create_task(Update_Config(require_refresh)), # 更新配置
         asyncio.create_task(Listen_Accept(connect_socket, Connected)), # 监听并接受网络连接
         asyncio.create_task(Tik_Tok(send_ready_network, send_ready_serial, 0.05)), # 定时触发发送
@@ -223,9 +218,11 @@ async def main_task(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloa
     # 等待所有任务完成
     await asyncio.gather(*tasks)
 
-def main(conn=None, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"):
-    asyncio.run(main_task(conn, port, baudrate, method))
-
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main(None, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"))
+    except KeyboardInterrupt:
+        print("程序已终止")
+    except Exception as exc:
+        _fatal_exit("发生错误", exc)
