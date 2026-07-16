@@ -394,10 +394,10 @@ def main(conn=None):
                 conn.send(msg)
 
             # 显示图像
-            frame = cv2.resize(frame, (640, 360))  # Resize for better display
-            cv2.imshow('Original Frame', frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # frame = cv2.resize(frame, (640, 360))  # Resize for better display
+            # cv2.imshow('Original Frame', frame)
+            # if cv2.waitKey(1) & 0xFF == ord('q'):
+            #     break
             frame_count += 1
             current_time = time.time()
             if current_time - last_time >= 1.0:
