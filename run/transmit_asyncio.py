@@ -44,6 +44,10 @@ def update_message():
         new_message.append(value)
     message = new_message
 
+def update_message_manual(new_message):
+    global message
+    message = new_message
+
 # 更新配置信息
 async def Update_Config(require_refresh: asyncio.Event):
     global config
@@ -76,10 +80,12 @@ async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_ser
     while conn is not None:
         try:
             # 等待管道中有数据可读
-            print("正在等待消息")
             msg = await asyncio.to_thread(conn.recv)
-            print("收到消息:", msg)
-            message = msg
+            new_message = [0, 0]
+            if msg[0] == 0:
+                new_message[0] = msg[1]
+                new_message[1] = msg[2]
+                update_message_manual(new_message)
             send_ready_network.set()  # 设置事件，表示有新消息可发送
             send_ready_serial.set()  # 设置事件，表示有新消息可发送
         except EOFError:
@@ -111,7 +117,8 @@ async def Send_Serial(send_ready: asyncio.Event):
         try:
             await send_ready.wait()
             if pack is not None:
-                pack.insert_byte(len(message))  # 包头
+                pack.insert_byte(0x03)  # 包头
+                pack.insert_three_bytes(pack.num_to_bytes(0))
                 for i in range(len(message)):
                     pack.insert_three_bytes(pack.num_to_bytes(message[i]))
                 pack.send_packet()
