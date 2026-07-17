@@ -53,7 +53,7 @@ def preprocess_frame(frame):
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     pink_mask = cv2.inRange(frame, (130, 20, 100), (160, 150, 255))
     black_mask = cv2.inRange(frame, (0, 0, 0), (180, 255, 100))
-    white_mask = cv2.inRange(frame, (0, 0, 200), (180, 30, 255))
+    white_mask = cv2.inRange(frame, (20, 0, 170), (160, 50, 255))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     pink_mask = cv2.morphologyEx(pink_mask, cv2.MORPH_CLOSE, kernel)
     # black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel, iterations=3)
@@ -82,7 +82,7 @@ def find_chess(gray):
 def distinguish_chess_color(roi):
     roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     black_mask = cv2.inRange(roi_hsv, (0, 0, 0), (180, 255, 100))
-    white_mask = cv2.inRange(roi_hsv, (0, 0, 200), (180, 30, 255))
+    white_mask = cv2.inRange(roi_hsv, (20, 0, 170), (160, 50, 255))
     black_count = cv2.countNonZero(black_mask)
     white_count = cv2.countNonZero(white_mask)
     if black_count > white_count:
@@ -131,12 +131,16 @@ def main(conn=None):
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
             pink_frame, black_frame, white_frame = preprocess_frame(frame)
-            contours, _ = cv2.findContours(black_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            black_contours, _ = cv2.findContours(black_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            white_contours, _ = cv2.findContours(white_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
             circles = find_chess(gray)
             valid_contour_vertex_small, valid_contour_vertex_large = find_contours(black_frame)
             if circles is not None:
                 for (x, y, r) in circles[0, :]:
                     x, y, r = int(x), int(y), int(r)
+                    distance = np.linalg.norm(np.array((x, y)) - np.array((FRAME_CENTER_X, FRAME_CENTER_Y)))
+                    if distance > 500:
+                        continue
                     roi = frame[max(0, y - r):min(frame.shape[0], y + r), max(0, x - r):min(frame.shape[1], x + r)]
                     chess_color = distinguish_chess_color(roi)
                     cv2.circle(frame, (x, y), r, (0, 255, 0), 2)
@@ -179,15 +183,15 @@ def main(conn=None):
                         print(f"Error drawing contour: {e}")
                         continue
             # pink_frame = cv2.resize(pink_frame, (640, 480))
-            # black_frame = cv2.resize(black_frame, (640, 480))
-            gray = cv2.resize(gray, (640, 480))
+            black_frame = cv2.resize(black_frame, (640, 480))
+            # gray = cv2.resize(gray, (640, 480))
             frame = cv2.resize(frame, (640, 480))
             white_frame = cv2.resize(white_frame, (640, 480))
-            cv2.imshow("Gray Frame", gray)
+            # cv2.imshow("Gray Frame", gray)
             cv2.imshow("White Frame", white_frame)
             cv2.imshow("Original Frame", frame)
             # cv2.imshow("Pink Frame", pink_frame)
-            # cv2.imshow("Black Frame", black_frame)
+            cv2.imshow("Black Frame", black_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
     except KeyboardInterrupt:
