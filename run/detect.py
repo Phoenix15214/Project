@@ -21,9 +21,12 @@ MAX_CHESS_RADIUS = 50
 MODEL_PATH = "/home/ubuntu/Project/Project/run/best.rknn"
 NUM_CLASSES = 2
 white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
+sorted_chess_board_position = []
 isInitialized = False
 chess_color = None
 chess_index = None
+board_index = None
+phase = 0
 
 class ObjectTracker:
     def __init__(self, num_objects):
@@ -168,25 +171,121 @@ def initialization(black_chess_position, white_chess_position, contour_vertex, l
         return sorted_chess_board_position, last_black_chess_position, last_white_chess_position
     return None, None, None
 
-def get_chess(black_chess_position, white_chess_position, color, index):
-    if color is None or index is None:
-        return None
-    if color == "black" and index < len(black_chess_position):
-        return black_chess_position[index]
-    elif color == "white" and index < len(white_chess_position):
-        return white_chess_position[index]
-    return None
+def get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position):
+    chess_state = []
+    for i in range(9):
+        if i < len(sorted_chess_board_position):
+            board_center = sorted_chess_board_position[i]
+            found_black = any(np.hypot(board_center[0] - bx, board_center[1] - by) < 30 for bx, by in black_chess_position)
+            found_white = any(np.hypot(board_center[0] - wx, board_center[1] - wy) < 30 for wx, wy in white_chess_position)
+            if found_black:
+                chess_state.append('B')
+            elif found_white:
+                chess_state.append('W')
+            else:
+                chess_state.append('E')  # Empty
+        else:
+            chess_state.append('E')  # Empty
+    return chess_state
 
-def task_1(frame, gray_bgr, black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small):
+# 各题目对应函数
+# 题目1：将任意黑棋子移动到5号方格
+def task_1(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, conn):
     global isInitialized
     global chess_color, chess_index
+    global phase
+    global sorted_chess_board_position
     if not isInitialized:
         sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
         if sorted_chess_board_position is not None:
             isInitialized = True
             print("Initialization complete.")
-    target = task1_dict.get("get_chess")(black_chess_position, white_chess_position, chess_color, chess_index)  # 获取第一个黑棋位置
-    return target
+    else:
+        if phase == 0:
+            bx, by = black_chess_position[chess_index]
+            if conn is not None:
+                conn.send((bx, by))
+        elif phase == 1:
+            cx, cy = sorted_chess_board_position[4]  # 5号方格的中心点
+            if conn is not None:
+                conn.send((cx, cy))
+    # 将当前的黑白棋子位置和轮廓返回，以便在主循环中继续使用
+    return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
+
+# 题目2：能将任意两颗黑棋子和两颗白棋子放入指定方格中
+# 此处的chess_color和chess_index、chess_board_index均需要为列表
+def task_2(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, conn):
+    global isInitialized
+    global chess_color, chess_index, board_index
+    global sorted_chess_board_position
+    if not isInitialized:
+        sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
+        if sorted_chess_board_position is not None:
+            isInitialized = True
+            print("Initialization complete.")
+    else:
+        if phase == 0:
+            cx, cy = black_chess_position[chess_index[0]] if chess_color == "black" else white_chess_position[chess_index[0]]
+            if conn is not None:
+                conn.send((cx, cy))
+        elif phase == 1:
+            cx, cy = sorted_chess_board_position[board_index[0]]  # 第一个目标方格的中心点
+            if conn is not None:
+                conn.send((cx, cy))
+        elif phase == 2:
+            cx, cy = black_chess_position[chess_index[1]] if chess_color == "black" else white_chess_position[chess_index[1]]
+            if conn is not None:
+                conn.send((cx, cy))
+        elif phase == 3:
+            cx, cy = sorted_chess_board_position[board_index[1]]  # 第二个目标方格的中心点
+            if conn is not None:
+                conn.send((cx, cy))
+    # 将当前的黑白棋子位置和轮廓返回，以便在主循环中继续使用
+    return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
+
+# 题目3：将棋盘在45度范围内旋转后，能将任意两颗黑棋子和两颗白棋子放入指定方格中
+# 因棋子移动逻辑和task_2相同，故直接调用task_2即可
+def task_3(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, conn):
+    global isInitialized
+    global chess_color, chess_index, board_index
+    global sorted_chess_board_position
+    if not isInitialized:
+        sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
+        if sorted_chess_board_position is not None:
+            isInitialized = True
+            print("Initialization complete.")
+    else:
+        if phase == 0:
+            cx, cy = black_chess_position[chess_index[0]] if chess_color == "black" else white_chess_position[chess_index[0]]
+            if conn is not None:
+                conn.send((cx, cy))
+        elif phase == 1:
+            cx, cy = sorted_chess_board_position[board_index[0]]  # 第一个目标方格的中心点
+            if conn is not None:
+                conn.send((cx, cy))
+        elif phase == 2:
+            cx, cy = black_chess_position[chess_index[1]] if chess_color == "black" else white_chess_position[chess_index[1]]
+            if conn is not None:
+                conn.send((cx, cy))
+        elif phase == 3:
+            cx, cy = sorted_chess_board_position[board_index[1]]  # 第二个目标方格的中心点
+            if conn is not None:
+                conn.send((cx, cy))
+    # 将当前的黑白棋子位置和轮廓返回，以便在主循环中继续使用
+    return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
+
+# 题目4：装置执黑棋与人对弈（第一步方格可设置），若人应对的第一步白棋有错误，装置能获胜
+def task_4(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, conn):
+    global isInitialized
+    global chess_color, chess_index, board_index
+    global sorted_chess_board_position
+    if not isInitialized:
+        sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
+        if sorted_chess_board_position is not None:
+            isInitialized = True
+            print("Initialization complete.")
+    
+    return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
 
 # 打开摄像头
 def open_camera():
@@ -263,19 +362,11 @@ def distinguish_chess_color(roi):
     else:
         return "white"
 
-
-task_dict = {
-    "task_1": task_1,
-}
-
-task1_dict = {
-    "get_chess": get_chess,
-    # "place_chess": place_chess,
-}
-
-
 def main(conn=None):
     global isInitialized
+    global sorted_chess_board_position
+    global phase
+    global chess_color, chess_index, board_index
     with lb.YOLODetector(MODEL_PATH, NUM_CLASSES, method="rknn", conf_thresh=0.5, iou_thresh=0.60, imgsz=(224,224)) as detector:
         # 显示FPS
         last_time = time.time()
@@ -305,7 +396,6 @@ def main(conn=None):
             print("Failed to grab initial frame")
             cap.release()
             return
-        phase = 0
         try:
             while True:
                 # 当前棋子位置(这里是每次循环更新的)
@@ -323,8 +413,10 @@ def main(conn=None):
                 white_contours, _ = cv2.findContours(white_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
                 # 通过YOLO检测棋子位置
                 black_chess_position, white_chess_position = find_chess_via_yolo(gray_bgr, detector)
+                # 若漏检，跳过此帧
                 if len(black_chess_position) != 5 or len(white_chess_position) != 5:
                     continue
+                # 检测棋盘格
                 valid_contour_vertex_small = find_contours(black_frame)
                 cv2.drawContours(frame, valid_contour_vertex_small, -1, (0, 255, 0), 2) if valid_contour_vertex_small is not None else None
                 # 绘制出棋子位置并编号
@@ -351,7 +443,14 @@ def main(conn=None):
                     cv2.circle(frame, (wx, wy), 5, (255, 255, 255), -1)
 
                 # 获取当前任务的目标点
-                target = task_dict.get(task, lambda: None)(frame, gray_bgr, black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small)  # 执行当前任务
+                if task == "task_1":
+                    last_black_chess_position, last_white_chess_position, valid_contour_vertex_small = task_1((black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, conn))
+                elif task == "task_2":
+                    last_black_chess_position, last_white_chess_position, valid_contour_vertex_small = task_2((black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, conn))
+                elif task == "task_3":
+                    last_black_chess_position, last_white_chess_position, valid_contour_vertex_small = task_3((black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, conn))
+                elif task == "task_4":
+                    last_black_chess_position, last_white_chess_position, valid_contour_vertex_small = task_4((black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, conn))
 
                 if not isInitialized:
                     sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
