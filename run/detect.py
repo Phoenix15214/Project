@@ -12,21 +12,15 @@ CAMERA_WIDTH = 1280 # 1080p 1920*1080
 CAMERA_HEIGHT = 720 # 1080p 1920*1080
 FRAME_CENTER_X = CAMERA_WIDTH // 2
 FRAME_CENTER_Y = CAMERA_HEIGHT // 2
-MIN_AREA_SMALL = 9000
+MIN_AREA_SMALL = 5000
 MAX_AREA_SMALL = 70000
 MIN_AREA_LARGE = 30000
 MAX_AREA_LARGE = 10000000
 MIN_CHESS_RADIUS = 5
 MAX_CHESS_RADIUS = 50
+MODEL_PATH = "/home/ubuntu/Project/Project/run/best.rknn"
+NUM_CLASSES = 2
 white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
-
-# 储存各对象坐标，前四个为黑棋，5-8为白棋，最后九个为棋盘格中心点
-positions = []
-# 初始化各对象位置
-for i in range(17):
-    positions.append((0, 0))
-
-
 
 # 打开摄像头
 def open_camera():
@@ -69,15 +63,28 @@ def find_contours(binary):
         return None, None
     
     valid_contour_vertex_small = lb.Find_Poly(contours, shape=4, min_area=MIN_AREA_SMALL, max_area=MAX_AREA_SMALL, factor=0.1)
-    valid_contour_vertex_large = lb.Find_Poly(contours, shape=4, min_area=MIN_AREA_LARGE, max_area=MAX_AREA_LARGE, factor=0.1)
 
-    return valid_contour_vertex_small, valid_contour_vertex_large
+    return valid_contour_vertex_small
 
 def find_chess(gray):
     circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, dp=1, minDist=80, param1=150, param2=30, minRadius=20, maxRadius=50)
     if circles is not None:
         circles = np.uint16(np.around(circles))
     return circles
+
+def find_chess_via_yolo(img, detector):
+    boxes, _, cls_ids = detector.detect(img)
+    black_centers = []
+    white_centers = []
+    for box, cls_id in zip(boxes, cls_ids):
+        x1, y1, x2, y2 = box
+        center_x = (x1 + x2) // 2
+        center_y = (y1 + y2) // 2
+        if cls_id == 0:  # 假设0是黑棋
+            black_centers.append((center_x, center_y))
+        elif cls_id == 1:  # 假设1是白棋
+            white_centers.append((center_x, center_y))
+    return black_centers, white_centers
 
 def distinguish_chess_color(roi):
     roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
@@ -92,115 +99,88 @@ def distinguish_chess_color(roi):
 
 
 def main(conn=None):
-    # 显示FPS
-    last_time = time.time()
-    current_time = time.time()
-    fps = 0
-    frame_count = 0
-    target_point = (640, 360)  # 目标点坐标，位于图像中心
-    current_point = (640, 360)  # 当前点坐标，初始化为图像中心
-    # 初始棋子位置，用于记住返回位置
-    initial_black_chess_position = []
-    initial_white_chess_position = []
-    # 初始化棋子位置
-    # black_chess_position, white_chess_position = chess_position_init(black_chess_position, white_chess_position)
-    # initial_black_chess_position, initial_white_chess_position = chess_position_init(initial_black_chess_position, initial_white_chess_position)
-    # 棋盘格中心位置
-    chess_board_position = []
+    with lb.YOLODetector(MODEL_PATH, NUM_CLASSES, method="rknn", conf_thresh=0.5, iou_thresh=0.30, imgsz=(640,640)) as detector:
+        # 显示FPS
+        last_time = time.time()
+        current_time = time.time()
+        fps = 0
+        frame_count = 0
+        target_point = (640, 360)  # 目标点坐标，位于图像中心
+        current_point = (640, 360)  # 当前点坐标，初始化为图像中心
+        # 历史棋子和棋盘位置
+        last_black_chess_position = []
+        last_white_chess_position = []
+        chess_board_position = []
+        # 当前棋子位置
+        current_black_chess_position = []
+        current_white_chess_position = []
 
-    # 打开摄像头
-    cap = open_camera()
-    if cap is None:
-        return
-    ret, frame = cap.read()
-    warped = frame
-    if not ret:
-        print("Failed to grab initial frame")
-        cap.release()
-        return
-    phase = 0
-    try:
-        while True:
-            # 当前棋子位置
-            black_chess_position = []
-            white_chess_position = []
-            # 获取图像
-            _, frame = cap.read()
-            # frame = frame[CAMERA_HEIGHT//4:3*CAMERA_HEIGHT//4, CAMERA_WIDTH//4:3*CAMERA_WIDTH//4]
-            # frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT), interpolation=cv2.INTER_NEAREST)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-            pink_frame, black_frame, white_frame = preprocess_frame(frame)
-            black_contours, _ = cv2.findContours(black_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            white_contours, _ = cv2.findContours(white_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            circles = find_chess(gray)
-            valid_contour_vertex_small, valid_contour_vertex_large = find_contours(black_frame)
-            if circles is not None:
-                for (x, y, r) in circles[0, :]:
-                    x, y, r = int(x), int(y), int(r)
-                    distance = np.linalg.norm(np.array((x, y)) - np.array((FRAME_CENTER_X, FRAME_CENTER_Y)))
-                    if distance > 500:
-                        continue
-                    roi = frame[max(0, y - r):min(frame.shape[0], y + r), max(0, x - r):min(frame.shape[1], x + r)]
-                    chess_color = distinguish_chess_color(roi)
-                    cv2.circle(frame, (x, y), r, (0, 255, 0), 2)
-                    cv2.circle(frame, (x, y), 2, (0, 0, 255), 3)
-                    if chess_color == "black":
-                        black_chess_position.append((x, y))
-                    else:
-                        white_chess_position.append((x, y))
-                black_chess_position.sort(key=lambda x: x[1])
-                white_chess_position.sort(key=lambda x: x[1])
-                for i in range(min(len(black_chess_position), 4)):
-                    cv2.putText(frame, f"B{i+1}", black_chess_position[i], cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                for i in range(min(len(white_chess_position), 4)):
-                    cv2.putText(frame, f"W{i+1}", white_chess_position[i], cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            else:
-                cv2.putText(frame, "Chess Point: Not Found", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            
-            if valid_contour_vertex_small is not None and len(valid_contour_vertex_small) > 1:
-                for vertex in valid_contour_vertex_small:
-                    if vertex is None:
-                        continue
-                    try:
-                        center = lb._cal_single_center(vertex)
-                        contour = np.array(vertex, dtype=np.int32).reshape(-1, 1, 2)
-                        cv2.drawContours(frame, [contour], -1, (0, 255, 0), 3)
-                        cv2.circle(frame, center, 5, (255, 0, 0), -1)
-                    except Exception as e:
-                        print(f"Error drawing contour: {e}")
-                        continue
-            if valid_contour_vertex_large is not None and len(valid_contour_vertex_large) > 1:
-                for vertex in valid_contour_vertex_large:
-                    if vertex is None:
-                        continue
-                    try:
-                        center = lb._cal_single_center(vertex)
-                        contour = np.array(vertex, dtype=np.int32).reshape(-1, 1, 2)
-                        cv2.drawContours(frame, [contour], -1, (0, 255, 255), 3)
-                        cv2.circle(frame, center, 5, (255, 0, 0), -1)
-                    except Exception as e:
-                        print(f"Error drawing contour: {e}")
-                        continue
-            # pink_frame = cv2.resize(pink_frame, (640, 480))
-            black_frame = cv2.resize(black_frame, (640, 480))
-            # gray = cv2.resize(gray, (640, 480))
-            frame = cv2.resize(frame, (640, 480))
-            white_frame = cv2.resize(white_frame, (640, 480))
-            # cv2.imshow("Gray Frame", gray)
-            cv2.imshow("White Frame", white_frame)
-            cv2.imshow("Original Frame", frame)
-            # cv2.imshow("Pink Frame", pink_frame)
-            cv2.imshow("Black Frame", black_frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-    except KeyboardInterrupt:
-        print("Interrupted by user")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
+        # 打开摄像头
+        cap = open_camera()
+        if cap is None:
+            return
+        ret, frame = cap.read()
+        warped = frame
+        if not ret:
+            print("Failed to grab initial frame")
+            cap.release()
+            return
+        phase = 0
+        try:
+            while True:
+                # 当前棋子位置
+                black_chess_position = []
+                white_chess_position = []
+                # 获取图像
+                _, frame = cap.read()
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+                pink_frame, black_frame, white_frame = preprocess_frame(frame)
+                black_contours, _ = cv2.findContours(black_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                white_contours, _ = cv2.findContours(white_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                black_chess_position, white_chess_position = find_chess_via_yolo(frame, detector)
+                valid_contour_vertex_small = find_contours(black_frame)
+                if len(black_chess_position) > 0 and len(white_chess_position) > 0:
+                    for i, (bx, by) in enumerate(black_chess_position):
+                        cv2.putText(frame, f"B{i+1}", (bx, by), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    for i, (wx, wy) in enumerate(white_chess_position):
+                        cv2.putText(frame, f"W{i+1}", (wx, wy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                if valid_contour_vertex_small is not None and len(valid_contour_vertex_small) > 1:
+                    for vertex in valid_contour_vertex_small:
+                        if vertex is None:
+                            continue
+                        try:
+                            center = lb._cal_single_center(vertex)
+                            contour = np.array(vertex, dtype=np.int32).reshape(-1, 1, 2)
+                            cv2.drawContours(frame, [contour], -1, (0, 255, 0), 3)
+                            cv2.circle(frame, center, 5, (255, 0, 0), -1)
+                        except Exception as e:
+                            print(f"Error drawing contour: {e}")
+                            continue
+                    for i in range(min(len(valid_contour_vertex_small), 9)):
+                        center = lb._cal_single_center(valid_contour_vertex_small[i])
+                        cv2.putText(frame, f"S{i+1}", center, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                
+                # pink_frame = cv2.resize(pink_frame, (640, 480))
+                black_frame = cv2.resize(black_frame, (640, 480))
+                # gray = cv2.resize(gray, (640, 480))
+                frame = cv2.resize(frame, (640, 480))
+                white_frame = cv2.resize(white_frame, (640, 480))
+                # cv2.imshow("Gray Frame", gray)
+                cv2.imshow("White Frame", white_frame)
+                cv2.imshow("Original Frame", frame)
+                # cv2.imshow("Pink Frame", pink_frame)
+                cv2.imshow("Black Frame", black_frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+        except KeyboardInterrupt:
+            print("Interrupted by user")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        finally:
+            cap.release()
+            cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
