@@ -57,7 +57,7 @@ async def Update_Config(require_refresh: asyncio.Event):
         print("配置已更新，当前配置为:", config_data)
         config.update()
         config_data = config.get_all()
-        update_message()
+        # update_message()
         require_refresh.clear()
 
 # 监听并创建socket连接
@@ -77,6 +77,7 @@ async def Listen_Accept(connect_socket, Connected: asyncio.Event):
 # 获取管道中的消息并更新全局message变量
 async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_serial: asyncio.Event):
     global message
+    global pack
     while conn is not None:
         try:
             # 等待管道中有数据可读
@@ -86,6 +87,10 @@ async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_ser
                 new_message[0] = msg[1]
                 new_message[1] = msg[2]
                 update_message_manual(new_message)
+            elif msg[0] == 1:
+                send_message = msg[1]
+                if pack is not None:
+                    pack.send_char(send_message)
             send_ready_network.set()  # 设置事件，表示有新消息可发送
             send_ready_serial.set()  # 设置事件，表示有新消息可发送
         except EOFError:
@@ -144,7 +149,7 @@ async def Recv_Network(require_refresh: asyncio.Event, Connected: asyncio.Event)
                 print(f"Received data: {msg}")
                 if len(msg) == 0:
                     break
-                command, value = pack.parse_input(msg)
+                command, value = ctrl.Parse_Input(msg)
                 if command == "start":
                     config.update()
                 elif command is None:
@@ -161,7 +166,7 @@ async def Recv_Network(require_refresh: asyncio.Event, Connected: asyncio.Event)
         Connected.clear()
     Connected.clear()
 
-async def Recv_Serial(require_refresh: asyncio.Event):
+async def Recv_Serial(conn, require_refresh: asyncio.Event):
     global config
     global config_data
     global pack
@@ -180,6 +185,28 @@ async def Recv_Serial(require_refresh: asyncio.Event):
                 for val in config_data.values():
                     pack.insert_three_bytes(pack.num_to_bytes(int(val)))
                 pack.send_packet()
+            elif command == "Con_Mode_1":
+                print("收到题目一指令")
+                if conn is not None:
+                    conn.send("task:1\n")
+            elif command == "Con_Mode_2":
+                if conn is not None:
+                    conn.send("task:2\n")
+            elif command == "Con_Mode_3":
+                if conn is not None:
+                    conn.send("task:3\n")
+            elif command == "Con_Mode_4":
+                if conn is not None:
+                    conn.send("task:4\n")
+            elif command == "Con_Mode_5":
+                if conn is not None:
+                    conn.send("task:5\n")
+            elif command == "Move":
+                if conn is not None:
+                    conn.send(f"Move:{value}\n")
+            elif command == "OK":
+                if conn is not None:
+                    conn.send(f"OK:{value}\n")
             else:
                 original_value = config_data.get(command, None)
                 if original_value is not None:
@@ -221,7 +248,7 @@ async def main_task(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloa
         asyncio.create_task(Send_Network(method, send_ready_network)), # 发送消息到网络
         asyncio.create_task(Send_Serial(send_ready_serial)), # 发送消息到串口
         asyncio.create_task(Recv_Network(require_refresh, Connected)), # 从网络接收配置更新
-        asyncio.create_task(Recv_Serial(require_refresh)), # 从串口接收配置更新
+        asyncio.create_task(Recv_Serial(conn, require_refresh)), # 从串口接收配置更新
         asyncio.create_task(Update_Config(require_refresh)), # 更新配置
         asyncio.create_task(Listen_Accept(connect_socket, Connected)), # 监听并接受网络连接
         asyncio.create_task(Tik_Tok(send_ready_network, send_ready_serial, 0.05)), # 定时触发发送
