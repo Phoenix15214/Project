@@ -23,10 +23,11 @@ NUM_CLASSES = 2
 white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
 sorted_chess_board_position = []
 isInitialized = False
-chess_color = None
-chess_index = None
-board_index = None
-phase = 0
+chess_color = []
+chess_index = []
+board_index = []
+chess_state = []
+phase = 1
 
 # 跟踪棋子位置
 class ObjectTracker:
@@ -234,7 +235,7 @@ def initialization(black_chess_position, white_chess_position, contour_vertex, l
         if k_perp != 0 and len(chess_board_position) == 9:
             for center in chess_board_position:
                 distance = (k_perp * center[0] - center[1] + b_perp) / math.sqrt(k_perp**2 + 1)
-                distance = -distance #if k_perp > 0 else distance
+                distance = -distance # if k_perp > 0 else distance
                 chess_board_distances.append(distance)
             combined = list(zip(chess_board_position, chess_board_distances))
             combined_sorted = sorted(combined, key=lambda x: x[1])
@@ -242,9 +243,9 @@ def initialization(black_chess_position, white_chess_position, contour_vertex, l
             sorted_distances = [item[1] for item in combined_sorted]
             for i in range (3):
                 chess_board_centers = sorted_positions[i*3:(i+1)*3]
-                chess_board_centers.sort(key=lambda x: x[1])  # 按y坐标排序
+                chess_board_centers.sort(key=lambda x: x[0])  # 按x坐标排序
                 for j in range(3):
-                    sorted_chess_board_position.append(chess_board_centers[j]) if k_perp > 0 else sorted_chess_board_position.append(chess_board_centers[2-j])
+                    sorted_chess_board_position.append(chess_board_centers[j]) #if k_perp < 0 else sorted_chess_board_position.append(chess_board_centers[2-j])
         return sorted_chess_board_position, last_black_chess_position, last_white_chess_position
     return None, None, None
 
@@ -279,17 +280,23 @@ def task_1(black_chess_position, white_chess_position, last_black_chess_position
             isInitialized = True
             print("Initialization complete.")
     else:
-        if chess_index is not None:
-            if phase == 0:
-                time.sleep(0.5)  # 等待输入命令
-            elif phase == 1:
-                bx, by = black_tracker.tracked_centers[chess_index]
-                if conn is not None:
-                    conn.send([0, bx, by])
-            elif phase == 2:
-                cx, cy = sorted_chess_board_position[4]  # 5号方格的中心点
-                if conn is not None:
-                    conn.send([0, cx, cy])
+        # 若有None报错可以恢复
+        # if chess_index is not None:
+        if phase == 0:
+            time.sleep(0.5)  # 等待输入命令
+        elif phase == 1:
+            bx, by = black_tracker.tracked_centers[chess_index[0]]
+            if conn is not None:
+                conn.send([0, bx, by])
+        elif phase == 2:
+            cx, cy = sorted_chess_board_position[4]  # 5号方格的中心点
+            if conn is not None:
+                conn.send([0, cx, cy])
+        elif phase == 3:
+            if conn is not None:
+                send_message = [1, "@Back$#"]
+                conn.send(send_message)
+            phase = 0
     # 将当前的黑白棋子位置和轮廓返回，以便在主循环中继续使用
     return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
 
@@ -309,7 +316,7 @@ def task_2(black_chess_position, white_chess_position, last_black_chess_position
         if phase == 0:
             time.sleep(0.5)  # 等待输入命令
         elif phase == 1:
-            cx, cy = black_tracker.tracked_centers[chess_index[0]] if chess_color == "black" else white_tracker.tracked_centers[chess_index[0]]
+            cx, cy = black_tracker.tracked_centers[chess_index[0]] if chess_color[0] == "black" else white_tracker.tracked_centers[chess_index[0]]
             if conn is not None:
                 conn.send([0, cx, cy])
         elif phase == 2:
@@ -317,7 +324,7 @@ def task_2(black_chess_position, white_chess_position, last_black_chess_position
             if conn is not None:
                 conn.send([0, cx, cy])
         elif phase == 3:
-            cx, cy = black_tracker.tracked_centers[chess_index[1]] if chess_color == "black" else white_tracker.tracked_centers[chess_index[1]]
+            cx, cy = black_tracker.tracked_centers[chess_index[1]] if chess_color[1] == "black" else white_tracker.tracked_centers[chess_index[1]]
             if conn is not None:
                 conn.send([0, cx, cy])
         elif phase == 4:
@@ -341,18 +348,20 @@ def task_3(black_chess_position, white_chess_position, last_black_chess_position
             print("Initialization complete.")
     else:
         if phase == 0:
-            cx, cy = black_tracker.tracked_centers[chess_index[0]] if chess_color == "black" else white_tracker.tracked_centers[chess_index[0]]
-            if conn is not None:
-                conn.send([0, cx, cy])
+            time.sleep(0.5)  # 等待输入命令
         elif phase == 1:
-            cx, cy = sorted_chess_board_position[board_index[0]]  # 第一个目标方格的中心点
+            cx, cy = black_tracker.tracked_centers[chess_index[0]] if chess_color[0] == "black" else white_tracker.tracked_centers[chess_index[0]]
             if conn is not None:
                 conn.send([0, cx, cy])
         elif phase == 2:
-            cx, cy = black_tracker.tracked_centers[chess_index[1]] if chess_color == "black" else white_tracker.tracked_centers[chess_index[1]]
+            cx, cy = sorted_chess_board_position[board_index[0]]  # 第一个目标方格的中心点
             if conn is not None:
                 conn.send([0, cx, cy])
         elif phase == 3:
+            cx, cy = black_tracker.tracked_centers[chess_index[1]] if chess_color[1] == "black" else white_tracker.tracked_centers[chess_index[1]]
+            if conn is not None:
+                conn.send([0, cx, cy])
+        elif phase == 4:
             cx, cy = sorted_chess_board_position[board_index[1]]  # 第二个目标方格的中心点
             if conn is not None:
                 conn.send([0, cx, cy])
@@ -362,62 +371,78 @@ def task_3(black_chess_position, white_chess_position, last_black_chess_position
 # 题目4：装置执黑棋与人对弈（第一步方格可设置），若人应对的第一步白棋有错误，装置能获胜
 def task_4(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, tic_tac_toe, black_tracker, conn):
     global isInitialized
-    global chess_color, chess_index, board_index
+    global chess_color, chess_index, board_index, chess_state
     global sorted_chess_board_position
     global phase
     if not isInitialized:
         sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
         if sorted_chess_board_position is not None:
+            chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
             isInitialized = True
             print("Initialization complete.")
     else:
-        if phase == 0: # phase0为取棋
-            cx, cy = black_tracker.tracked_centers[chess_index]
+        current_chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
+        if phase == 0: # phase0为等待
+            time.sleep(0.5) # 等待输入命令
+        if phase == 1: # phase1为取棋
+            cx, cy = black_tracker.tracked_centers[chess_index[0]]
             if conn is not None:
                 conn.send([0, cx, cy])
-        elif phase == 1: # phase1为放棋
-            cx, cy = sorted_chess_board_position[board_index]  # 第一个目标方格的中心点
+        elif phase == 2: # phase2为放棋
+            cx, cy = sorted_chess_board_position[board_index[0]]  # 第一个目标方格的中心点
             if conn is not None:
                 conn.send([0, cx, cy])
-        elif phase == 2: # phase2为AI下棋
+        elif phase == 3: # phase3为等待
+            if current_chess_state != chess_state:
+                chess_state = current_chess_state
+                phase = 4 # 该AI下棋了
+            time.sleep(1) # 等待人下棋
+        elif phase == 4: # phase4为AI下棋
             chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
             tic_tac_toe.update_board(chess_state)
             ai_move = tic_tac_toe.best_move(chess_state)
             board_index = ai_move
-            phase = 0 # 该取棋了
-        elif phase == 3: # phase3该等人下棋
-            time.sleep(1) # 等待人下棋
+            phase = 2 # 该取棋了
+        elif phase == 5:
+            phase = 0 # 溢出
 
     return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
 
 # 题目5：人执黑棋先行，装置能正确放置白棋子以保持不输棋
 def task_5(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, tic_tac_toe, white_tracker, conn):
     global isInitialized
-    global chess_color, chess_index, board_index
+    global chess_color, chess_index, board_index, chess_state
     global sorted_chess_board_position
     global phase
     if not isInitialized:
         sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
         if sorted_chess_board_position is not None:
+            chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
             isInitialized = True
             print("Initialization complete.")
     else:
-        if phase == 0: # phase0为取棋
-            cx, cy = white_tracker.tracked_centers[chess_index]
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 1: # phase1为放棋
-            cx, cy = sorted_chess_board_position[board_index]  # 第一个目标方格的中心点
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 2: # phase2为AI下棋
+        current_chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
+        if phase == 0:
+            if current_chess_state != chess_state:
+                chess_state = current_chess_state
+                phase = 1 # 该AI下棋了
+            time.sleep(1) # 等待人下棋
+        elif phase == 1: # phase1为AI下棋
             chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
             tic_tac_toe.update_board(chess_state)
             ai_move = tic_tac_toe.best_move(chess_state)
             board_index = ai_move
-            phase = 0 # 该取棋了
-        elif phase == 3: # phase3该等人下棋
-            time.sleep(1) # 等待人下棋
+            phase = 2 # 该取棋了
+        elif phase == 2: # phase2为取棋
+            cx, cy = white_tracker.tracked_centers[chess_index[0]]
+            if conn is not None:
+                conn.send([0, cx, cy])
+        elif phase == 3: # phase3为放棋
+            cx, cy = sorted_chess_board_position[board_index[0]]  # 第一个目标方格的中心点
+            if conn is not None:
+                conn.send([0, cx, cy])
+        elif phase == 4:
+            phase = 0 # 溢出
     
     return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
 
@@ -449,7 +474,8 @@ def preprocess_frame(frame):
     white_mask = cv2.inRange(frame, (20, 0, 170), (160, 50, 255))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     pink_mask = cv2.morphologyEx(pink_mask, cv2.MORPH_CLOSE, kernel)
-    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    black_mask = cv2.dilate(black_mask, kernel, iterations=2)
+    # black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     pink_frame = cv2.bitwise_and(white, white, mask=pink_mask)
     black_frame = cv2.bitwise_and(white, white, mask=black_mask)
     white_frame = cv2.bitwise_and(white, white, mask=white_mask)
@@ -467,7 +493,7 @@ def find_contours(binary):
     for vertex in contour_vertex_small:
         center = lb._cal_single_center(vertex)
         distance = np.hypot(center[0] - FRAME_CENTER_X, center[1] - FRAME_CENTER_Y)
-        if distance < 200:  # 只保留距离中心点较近的
+        if distance < 250:  # 只保留距离中心点较近的
             valid_contour_vertex_small.append(vertex)
 
     return valid_contour_vertex_small
@@ -506,6 +532,7 @@ def distinguish_chess_color(roi):
     else:
         return "white"
 
+# 处理设备间通信，逻辑需要重点打磨
 def handle_pipe(conn):
     global phase
     global chess_color, chess_index, board_index
@@ -514,26 +541,28 @@ def handle_pipe(conn):
         command, value = ctrl.Parse_Input(data)
         if command == "Move":
             print(f"Received Move command with value: {value}")
-            chess_color = "black" if int(value[1]) == 0 else "white"
-            chess_index = int(value[0])
-            board_index = int(value[2])
+            chess_color.append("black") if int(value[1]) == 0 else chess_color.append("white")
+            chess_index.append(int(value[0]))
+            board_index.append(int(value[2]))
             phase = 1
         elif command == "task":
             phase = 0
+            chess_index = []
+            board_index = []
             task = int(value)
         elif command == "OK":
-            if value == "5" and phase == 1:
-                phase = 2
-            elif value == "5" and phase == 2:
-                send_message = [1, "Back"]
-                conn.send(send_message)
+            if value == "5":
+                phase += 1
+                print(f"Phase incremented to {phase}")
+
+
 
 def main(conn=None):
     global isInitialized
     global sorted_chess_board_position
     global phase
     global chess_color, chess_index, board_index
-    with lb.YOLODetector(MODEL_PATH, NUM_CLASSES, method="rknn", conf_thresh=0.3, iou_thresh=0.60, imgsz=(224,224)) as detector:
+    with lb.YOLODetector(MODEL_PATH, NUM_CLASSES, method="rknn", conf_thresh=0.5, iou_thresh=0.50, imgsz=(320,320)) as detector:
         # 显示FPS
         last_time = time.time()
         current_time = time.time()
@@ -572,7 +601,7 @@ def main(conn=None):
                 # 获取图像并进行预处理
                 _, frame = cap.read()
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                gray = cv2.GaussianBlur(gray, (15, 15), 0)
+                gray = cv2.GaussianBlur(gray, (5, 5), 0)
                 gray = cv2.createCLAHE(clipLimit=6.0, tileGridSize=(8, 8)).apply(gray)
                 gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
                 pink_frame, black_frame, white_frame = preprocess_frame(frame)
@@ -620,18 +649,11 @@ def main(conn=None):
                 elif task == 4:
                     last_black_chess_position, last_white_chess_position, valid_contour_vertex_small = task_4(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, tic_tac_toe, black_tracker, conn)
 
-                if not isInitialized:
-                    sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
-                    if sorted_chess_board_position is not None:
-                        isInitialized = True
-                        print("Initialization complete.")
-                        # for i, pos in enumerate(sorted_chess_board_position):
-                        #     cv2.putText(frame, f"S{i+1}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                        #     cv2.circle(frame, pos, 5, (0, 255, 0), -1)
-                        # cv2.imshow("Original Frame", frame)
-                        # while True:
-                        #     cv2.waitKey(1)
-                        #     time.sleep(0.1)
+                if sorted_chess_board_position is not None:
+                    for i, pos in enumerate(sorted_chess_board_position):
+                        cv2.putText(frame, f"S{i+1}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        cv2.circle(frame, pos, 5, (0, 255, 0), -1)
+
 
                 black_frame = cv2.resize(black_frame, (640, 480))
                 # gray = cv2.resize(gray, (640, 480))

@@ -205,6 +205,9 @@ async def Recv_Serial(conn, require_refresh: asyncio.Event):
                 if conn is not None:
                     conn.send(f"Move:{value}\n")
             elif command == "OK":
+                if value == "4":
+                    send_message = "@Down$#"
+                    pack.send_char(send_message)
                 if conn is not None:
                     conn.send(f"OK:{value}\n")
             else:
