@@ -7,6 +7,7 @@ import process_lib.control_lib as ctrl
 import struct
 import asyncio
 
+config_message = []
 message = []
 pack = None
 server_socket = None
@@ -27,20 +28,28 @@ def _init_pack(port="/dev/ttyUSB0", baudrate=115200):
     try:
         pack = ctrl.SerialPacket(port=port, baudrate=baudrate, timeout=0.1)
     except Exception as exc:
-        raise RuntimeError(f"无法打开串口: {exc}")
+        print("无法打开串口")
+        pack = None
+        # raise RuntimeError(f"无法打开串口: {exc}")
     return pack
 
 def init_message(length):
     global message
     message = [0] * length
+    global config_message
+    config_message = [0] * length
 
 # 更新发送内容
-def update_message():
-    global message
+def update_config_message():
+    global config_message
     global config_data
     new_message = []
     for value in config_data.values():
         new_message.append(value)
+    config_message = new_message
+
+def update_message_manual(new_message):
+    global message
     message = new_message
 
 # 更新配置信息
@@ -52,7 +61,7 @@ async def Update_Config(require_refresh: asyncio.Event):
         print("配置已更新，当前配置为:", config_data)
         config.update()
         config_data = config.get_all()
-        update_message()
+        update_config_message()
         require_refresh.clear()
 
 # 监听并创建socket连接
@@ -72,13 +81,22 @@ async def Listen_Accept(connect_socket, Connected: asyncio.Event):
 # 获取管道中的消息并更新全局message变量
 async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_serial: asyncio.Event):
     global message
+    global pack
     while conn is not None:
         try:
             # 等待管道中有数据可读
             msg = await asyncio.to_thread(conn.recv)
-            message = msg
-            send_ready_network.set()  # 设置事件，表示有新消息可发送
-            send_ready_serial.set()  # 设置事件，表示有新消息可发送
+            new_message = [0, 0]
+            if msg[0] == 0: # 0开头为正常数据更新
+                new_message[0] = msg[1]
+                new_message[1] = msg[2]
+                update_message_manual(new_message)
+                send_ready_network.set()  # 设置事件，表示有新消息可发送
+                send_ready_serial.set()  # 设置事件，表示有新消息可发送
+            elif msg[0] == 1: # 1开头为文本消息
+                send_message = msg[1]
+                if pack is not None:
+                    pack.send_char(send_message)
         except EOFError:
             break
 
@@ -186,7 +204,7 @@ async def Tik_Tok(send_ready_network: asyncio.Event, send_ready_serial: asyncio.
         send_ready_network.set()
         send_ready_serial.set()
 
-async def main(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"):
+async def main_task(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"):
     global pack
     global server_socket
     global message
@@ -218,10 +236,12 @@ async def main(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"):
     # 等待所有任务完成
     await asyncio.gather(*tasks)
 
+def main(conn=None, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"):
+    asyncio.run(main_task(conn, port, baudrate, method))
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main(None, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"))
+        asyncio.run(main_task(None, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"))
     except KeyboardInterrupt:
         print("程序已终止")
     except Exception as exc:

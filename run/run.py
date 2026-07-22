@@ -5,16 +5,15 @@ import process_lib.control_lib as ctrl
 from multiprocessing import Process, Pipe, shared_memory, Value, Event
 from threading import Thread
 import time
-from transmit import Send_Process
 from detect import main as detect_main
-from transmit import Send_Process
+from transmit_asyncio import main as transmit_main
 
 pipe1, pipe2 = Pipe()
 
 def main():
     try:
         p1 = Process(target=detect_main, args=(pipe1,))
-        p2 = Process(target=Send_Process, args=(pipe2,))
+        p2 = Process(target=transmit_main, args=(pipe2,))
 
         p1.start()
         p2.start()
