@@ -12,439 +12,11 @@ CAMERA_WIDTH = 1280 # 1080p 1920*1080
 CAMERA_HEIGHT = 720 # 1080p 1920*1080
 FRAME_CENTER_X = CAMERA_WIDTH // 2
 FRAME_CENTER_Y = CAMERA_HEIGHT // 2
-MIN_AREA_SMALL = 5000
-MAX_AREA_SMALL = 20000
-MIN_AREA_LARGE = 30000
-MAX_AREA_LARGE = 10000000
-MIN_CHESS_RADIUS = 5
-MAX_CHESS_RADIUS = 50
-MODEL_PATH = "/home/ubuntu/Project/Project/run/best.rknn"
-NUM_CLASSES = 2
+MIN_AREA = 35000
+MAX_AREA = 1000000 # 原阈值为70000
+MIN_LASER_AREA = 0
+MAX_LASER_AREA = 5000
 white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
-sorted_chess_board_position = []
-isInitialized = False
-chess_color = []
-chess_index = []
-board_index = []
-chess_state = []
-phase = 1
-
-# 跟踪棋子位置
-class ObjectTracker:
-    def __init__(self, num_objects):
-        self.num_objects = num_objects
-        # 核心列表：索引即 ID，存储的是 (cx, cy) 元组
-        self.tracked_centers = [None] * num_objects  
-        self.initialized = False
-
-    def init_first_frame(self, curr_centers):
-        """第一帧：将YOLO传进来的乱序中心点，按顺序分配给 ID 0, 1, 2..."""
-        # 如果你希望按从左到右分配ID，可以在这里先排序：
-        # sorted_centers = sorted(curr_centers, key=lambda p: p[0])
-        # for i in range(self.num_objects): self.tracked_centers[i] = sorted_centers[i]
-        
-        for i in range(min(self.num_objects, len(curr_centers))):
-            self.tracked_centers[i] = curr_centers[i]
-        self.initialized = True
-
-    def update(self, curr_centers):
-        """
-        输入: curr_centers (当前帧YOLO输出的乱序中心点列表，如 [(x1,y1), (x2,y2), ...])
-        输出: (moved_id, new_position, distance)
-              moved_id: 移动目标的ID，-1表示无移动
-        """
-        if not self.initialized:
-            self.init_first_frame(curr_centers)
-            return -1, None, 0.0
-
-        # 1. 提取上一帧存储的固定顺序中心点
-        prev_centers = self.tracked_centers  # 按 ID 0,1,2... 排列
-
-        # 2. 匹配：建立 上一帧ID 与 当前帧乱序下标 的映射
-        pairs = self._match(prev_centers, curr_centers)  # [(tracked_id, curr_index), ...]
-
-        # 3. 构建新的跟踪列表（按ID顺序更新）
-        new_tracked = [None] * self.num_objects
-        moved_id = -1
-        max_dist = 0.0
-
-        for tracked_id, curr_idx in pairs:
-            curr_point = curr_centers[curr_idx]
-            new_tracked[tracked_id] = curr_point
-            
-            # 计算位移（找出移动最大的那个）
-            prev_point = prev_centers[tracked_id]
-            if prev_point is not None:
-                dist = np.hypot(prev_point[0] - curr_point[0],
-                                prev_point[1] - curr_point[1])
-                if dist > max_dist:
-                    max_dist = dist
-                    moved_id = tracked_id
-
-        # 4. 更新内部存储
-        self.tracked_centers = new_tracked
-
-        # 5. 阈值判断（防止抖动误报）
-        if max_dist < 5.0:  # 像素阈值，可根据实际调整
-            return -1, None, 0.0
-        
-        return moved_id, self.tracked_centers[moved_id], max_dist
-
-    def _match(self, prev_centers, curr_centers):
-        """
-        贪心匹配 (数量固定且少时足够快)
-        返回: [(tracked_id, curr_index), ...]
-        """
-        n = len(prev_centers)
-        used_curr = [False] * n
-        pairs = []
-        
-        # 计算 N x N 距离矩阵
-        dist_matrix = np.zeros((n, n))
-        for i in range(n):
-            if prev_centers[i] is None:  # 针对漏检预留
-                continue
-            for j in range(n):
-                dist_matrix[i][j] = np.hypot(prev_centers[i][0] - curr_centers[j][0],
-                                             prev_centers[i][1] - curr_centers[j][1])
-        
-        # 逐轮找最小距离匹配
-        for _ in range(n):
-            min_dist = float('inf')
-            min_i, min_j = -1, -1
-            for i in range(n):
-                if any(p[0] == i for p in pairs):  # ID i 已经匹配过了
-                    continue
-                if prev_centers[i] is None:
-                    continue
-                for j in range(n):
-                    if used_curr[j]:
-                        continue
-                    if dist_matrix[i][j] < min_dist:
-                        min_dist = dist_matrix[i][j]
-                        min_i, min_j = i, j
-            if min_i != -1:
-                pairs.append((min_i, min_j))
-                used_curr[min_j] = True
-                
-        return pairs
-
-class TicTacToe:
-    def __init__(self, board=sorted_chess_board_position, ai_player=-1, human_player=1):
-        # 棋盘用3x3列表表示，0空，1玩家X，-1玩家O（AI为-1方）
-        self.board = board
-        self.ai_player = ai_player
-        self.human_player = human_player
-
-    def update_board(self, new_board):
-        self.board = new_board
-
-    def get_possible_moves(self, board):
-        return [i for i, v in enumerate(board) if v == 0]
-
-    def make_move(self, board, move, player):
-        new_board = board[:]
-        new_board[move] = player
-        return new_board
-
-    # 判断是否结束
-    def is_terminal(self, board):
-        return self.check_winner(board) != 0 or not any(v == 0 for v in board)
-
-    def check_winner(self, board):
-        # 返回赢家标记，无赢家返回0
-        win_patterns = [(0,1,2), (3,4,5), (6,7,8),
-                        (0,3,6), (1,4,7), (2,5,8),
-                        (0,4,8), (2,4,6)]
-        for a,b,c in win_patterns:
-            if board[a] == board[b] == board[c] != 0:
-                return board[a]
-        return 0
-
-    def evaluate(self, board):
-        # AI视角：AI赢->正分，人赢->负分，平局0
-        winner = self.check_winner(board)
-        if winner == self.ai_player:
-            return 10
-        elif winner == self.human_player:
-            return -10
-        return 0
-
-    def alphabeta(self, board, depth, alpha, beta, is_maximizing):
-        if depth == 0 or self.is_terminal(board):
-            return self.evaluate(board), None
-
-        if is_maximizing:  # AI回合，最大化分数
-            best_score = float('-inf')
-            best_move = None
-            for move in self.get_possible_moves(board):
-                new_board = self.make_move(board, move, self.ai_player)
-                score, _ = self.alphabeta(new_board, depth - 1, alpha, beta, False)
-                if score > best_score:
-                    best_score = score
-                    best_move = move
-                alpha = max(alpha, score)
-                if alpha >= beta:
-                    break
-            return best_score, best_move
-        else:              # 人类回合，最小化分数
-            best_score = float('inf')
-            best_move = None
-            for move in self.get_possible_moves(board):
-                new_board = self.make_move(board, move, self.human_player)
-                score, _ = self.alphabeta(new_board, depth - 1, alpha, beta, True)
-                if score < best_score:
-                    best_score = score
-                    best_move = move
-                beta = min(beta, score)
-                if beta <= alpha:
-                    break
-            return best_score, best_move
-
-    def best_move(self, board):
-        _, move = self.alphabeta(board, depth=9, alpha=float('-inf'), beta=float('inf'), is_maximizing=True)
-        return move
-
-def initialization(black_chess_position, white_chess_position, contour_vertex, last_black_chess_position, last_white_chess_position):
-    sorted_chess_board_position = []
-    chess_board_position = []
-    chess_board_distances = []
-    if len(black_chess_position) == 5 and len(white_chess_position) == 5 and len(contour_vertex) == 9:
-        last_black_chess_position = black_chess_position.copy()
-        last_white_chess_position = white_chess_position.copy()
-        # 得出黑棋的拟合直线和垂线
-        k, b = np.polyfit([p[0] for p in black_chess_position], [p[1] for p in black_chess_position], 1) if len(black_chess_position) >= 2 else (0, 0)
-        x0, y0 = black_chess_position[0] if len(black_chess_position) > 0 else (0, 0)
-        k_perp = -1 / k if k != 0 else 0
-        b_perp = y0 - k_perp * x0 if k != 0 else 0
-
-        if contour_vertex is not None and len(contour_vertex) > 1:
-            for vertex in contour_vertex:
-                if vertex is None:
-                    continue
-                try:
-                    center = lb._cal_single_center(vertex)
-                    contour = np.array(vertex, dtype=np.int32).reshape(-1, 1, 2)
-                    chess_board_position.append(center)
-                except Exception as e:
-                    print(f"Error drawing contour: {e}")
-                    continue
-            for i in range(min(len(contour_vertex), 9)):
-                center = lb._cal_single_center(contour_vertex[i])
-        
-        if k_perp != 0 and len(chess_board_position) == 9:
-            for center in chess_board_position:
-                distance = (k_perp * center[0] - center[1] + b_perp) / math.sqrt(k_perp**2 + 1)
-                distance = -distance # if k_perp > 0 else distance
-                chess_board_distances.append(distance)
-            combined = list(zip(chess_board_position, chess_board_distances))
-            combined_sorted = sorted(combined, key=lambda x: x[1])
-            sorted_positions = [item[0] for item in combined_sorted]
-            sorted_distances = [item[1] for item in combined_sorted]
-            for i in range (3):
-                chess_board_centers = sorted_positions[i*3:(i+1)*3]
-                chess_board_centers.sort(key=lambda x: x[0])  # 按x坐标排序
-                for j in range(3):
-                    sorted_chess_board_position.append(chess_board_centers[j]) #if k_perp < 0 else sorted_chess_board_position.append(chess_board_centers[2-j])
-        return sorted_chess_board_position, last_black_chess_position, last_white_chess_position
-    return None, None, None
-
-def get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position):
-    # 棋盘格状态
-    chess_state = []
-    for i in range(9):
-        if i < len(sorted_chess_board_position):
-            board_center = sorted_chess_board_position[i]
-            found_black = any(np.hypot(board_center[0] - bx, board_center[1] - by) < 30 for bx, by in black_chess_position)
-            found_white = any(np.hypot(board_center[0] - wx, board_center[1] - wy) < 30 for wx, wy in white_chess_position)
-            if found_black:
-                chess_state.append('B')
-            elif found_white:
-                chess_state.append('W')
-            else:
-                chess_state.append('E')  # Empty
-        else:
-            chess_state.append('E')  # Empty
-    return chess_state
-
-# 各题目对应函数
-# 题目1：将任意黑棋子移动到5号方格
-def task_1(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, black_tracker, conn):
-    global isInitialized
-    global chess_color, chess_index
-    global phase
-    global sorted_chess_board_position
-    if not isInitialized:
-        sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
-        if sorted_chess_board_position is not None:
-            isInitialized = True
-            print("Initialization complete.")
-    else:
-        # 若有None报错可以恢复
-        # if chess_index is not None:
-        if phase == 0:
-            time.sleep(0.5)  # 等待输入命令
-        elif phase == 1:
-            bx, by = black_tracker.tracked_centers[chess_index[0]]
-            if conn is not None:
-                conn.send([0, bx, by])
-        elif phase == 2:
-            cx, cy = sorted_chess_board_position[4]  # 5号方格的中心点
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 3:
-            if conn is not None:
-                send_message = [1, "@Back$#"]
-                conn.send(send_message)
-            phase = 0
-    # 将当前的黑白棋子位置和轮廓返回，以便在主循环中继续使用
-    return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
-
-# 题目2：能将任意两颗黑棋子和两颗白棋子放入指定方格中
-# 此处的chess_color和chess_index、chess_board_index均需要为列表
-def task_2(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, black_tracker, white_tracker, conn):
-    global isInitialized
-    global chess_color, chess_index, board_index
-    global sorted_chess_board_position
-    global phase
-    if not isInitialized:
-        sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
-        if sorted_chess_board_position is not None:
-            isInitialized = True
-            print("Initialization complete.")
-    else:
-        if phase == 0:
-            time.sleep(0.5)  # 等待输入命令
-        elif phase == 1:
-            cx, cy = black_tracker.tracked_centers[chess_index[0]] if chess_color[0] == "black" else white_tracker.tracked_centers[chess_index[0]]
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 2:
-            cx, cy = sorted_chess_board_position[board_index[0]]  # 第一个目标方格的中心点
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 3:
-            cx, cy = black_tracker.tracked_centers[chess_index[1]] if chess_color[1] == "black" else white_tracker.tracked_centers[chess_index[1]]
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 4:
-            cx, cy = sorted_chess_board_position[board_index[1]]  # 第二个目标方格的中心点
-            if conn is not None:
-                conn.send([0, cx, cy])
-    # 将当前的黑白棋子位置和轮廓返回，以便在主循环中继续使用
-    return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
-
-# 题目3：将棋盘在45度范围内旋转后，能将任意两颗黑棋子和两颗白棋子放入指定方格中
-# 因棋子移动逻辑和task_2相同，故直接调用task_2即可
-def task_3(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, black_tracker, white_tracker, conn):
-    global isInitialized
-    global chess_color, chess_index, board_index
-    global sorted_chess_board_position
-    global phase
-    if not isInitialized:
-        sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
-        if sorted_chess_board_position is not None:
-            isInitialized = True
-            print("Initialization complete.")
-    else:
-        if phase == 0:
-            time.sleep(0.5)  # 等待输入命令
-        elif phase == 1:
-            cx, cy = black_tracker.tracked_centers[chess_index[0]] if chess_color[0] == "black" else white_tracker.tracked_centers[chess_index[0]]
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 2:
-            cx, cy = sorted_chess_board_position[board_index[0]]  # 第一个目标方格的中心点
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 3:
-            cx, cy = black_tracker.tracked_centers[chess_index[1]] if chess_color[1] == "black" else white_tracker.tracked_centers[chess_index[1]]
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 4:
-            cx, cy = sorted_chess_board_position[board_index[1]]  # 第二个目标方格的中心点
-            if conn is not None:
-                conn.send([0, cx, cy])
-    # 将当前的黑白棋子位置和轮廓返回，以便在主循环中继续使用
-    return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
-
-# 题目4：装置执黑棋与人对弈（第一步方格可设置），若人应对的第一步白棋有错误，装置能获胜
-def task_4(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, tic_tac_toe, black_tracker, conn):
-    global isInitialized
-    global chess_color, chess_index, board_index, chess_state
-    global sorted_chess_board_position
-    global phase
-    if not isInitialized:
-        sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
-        if sorted_chess_board_position is not None:
-            chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
-            isInitialized = True
-            print("Initialization complete.")
-    else:
-        current_chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
-        if phase == 0: # phase0为等待
-            time.sleep(0.5) # 等待输入命令
-        if phase == 1: # phase1为取棋
-            cx, cy = black_tracker.tracked_centers[chess_index[0]]
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 2: # phase2为放棋
-            cx, cy = sorted_chess_board_position[board_index[0]]  # 第一个目标方格的中心点
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 3: # phase3为等待
-            if current_chess_state != chess_state:
-                chess_state = current_chess_state
-                phase = 4 # 该AI下棋了
-            time.sleep(1) # 等待人下棋
-        elif phase == 4: # phase4为AI下棋
-            chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
-            tic_tac_toe.update_board(chess_state)
-            ai_move = tic_tac_toe.best_move(chess_state)
-            board_index = ai_move
-            phase = 2 # 该取棋了
-        elif phase == 5:
-            phase = 0 # 溢出
-
-    return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
-
-# 题目5：人执黑棋先行，装置能正确放置白棋子以保持不输棋
-def task_5(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, tic_tac_toe, white_tracker, conn):
-    global isInitialized
-    global chess_color, chess_index, board_index, chess_state
-    global sorted_chess_board_position
-    global phase
-    if not isInitialized:
-        sorted_chess_board_position, last_black_chess_position, last_white_chess_position = initialization(black_chess_position, white_chess_position, valid_contour_vertex_small, last_black_chess_position, last_white_chess_position)
-        if sorted_chess_board_position is not None:
-            chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
-            isInitialized = True
-            print("Initialization complete.")
-    else:
-        current_chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
-        if phase == 0:
-            if current_chess_state != chess_state:
-                chess_state = current_chess_state
-                phase = 1 # 该AI下棋了
-            time.sleep(1) # 等待人下棋
-        elif phase == 1: # phase1为AI下棋
-            chess_state = get_chess_state(black_chess_position, white_chess_position, sorted_chess_board_position)
-            tic_tac_toe.update_board(chess_state)
-            ai_move = tic_tac_toe.best_move(chess_state)
-            board_index = ai_move
-            phase = 2 # 该取棋了
-        elif phase == 2: # phase2为取棋
-            cx, cy = white_tracker.tracked_centers[chess_index[0]]
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 3: # phase3为放棋
-            cx, cy = sorted_chess_board_position[board_index[0]]  # 第一个目标方格的中心点
-            if conn is not None:
-                conn.send([0, cx, cy])
-        elif phase == 4:
-            phase = 0 # 溢出
-    
-    return last_black_chess_position, last_white_chess_position, valid_contour_vertex_small
 
 # 打开摄像头
 def open_camera():
@@ -454,226 +26,430 @@ def open_camera():
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
+        cap.set(cv2.CAP_PROP_EXPOSURE, 20)
+        actual_auto_exp = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
+        actual_exp = cap.get(cv2.CAP_PROP_EXPOSURE)
+        print(f"Camera settings: Auto Exposure={actual_auto_exp}, Exposure={actual_exp}")
         return cap
     except Exception as e:
         print(f"Error opening camera: {e}")
         raise RuntimeError("Failed to open camera.")
         return None
 
-def chess_position_init(black_chess_position, white_chess_position):
-    for i in range(4):
-        black_chess_position.append((0, 0))
-        white_chess_position.append((0, 0))
-    return black_chess_position, white_chess_position
-
-# 对图像进行预处理
+# 预处理图像，返回纯白色图像
 def preprocess_frame(frame):
-    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    pink_mask = cv2.inRange(frame, (130, 20, 100), (160, 150, 255))
-    black_mask = cv2.inRange(frame, (0, 0, 0), (180, 255, 100))
-    white_mask = cv2.inRange(frame, (20, 0, 170), (160, 50, 255))
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    pink_mask = cv2.morphologyEx(pink_mask, cv2.MORPH_CLOSE, kernel)
-    black_mask = cv2.dilate(black_mask, kernel, iterations=2)
-    # black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    pink_frame = cv2.bitwise_and(white, white, mask=pink_mask)
+    img_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    white_mask = cv2.inRange(img_hsv, (0, 0, 240), (180, 15, 255))
+    black_mask = cv2.inRange(img_hsv, (0, 0, 0), (180, 255, 100))
+    red_mask1 = cv2.inRange(img_hsv, (0, 25, 50), (15, 255, 255))
+    red_mask2 = cv2.inRange(img_hsv, (165, 25, 50), (180, 255, 255))
+    green_mask = cv2.inRange(img_hsv, (60, 50, 50), (80, 255, 255))
+    red_mask = cv2.bitwise_or(red_mask1, red_mask2)
+    red_frame = cv2.bitwise_and(white, white, mask=red_mask)
+    green_frame = cv2.bitwise_and(white, white, mask=green_mask)
     black_frame = cv2.bitwise_and(white, white, mask=black_mask)
     white_frame = cv2.bitwise_and(white, white, mask=white_mask)
+    return white_frame, black_frame, red_frame, green_frame
 
-    return pink_frame, black_frame, white_frame
+# 寻找轮廓
+def find_contours(white_frame, min_area=MIN_AREA, max_area=MAX_AREA):
+    contours, _ = cv2.findContours(white_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    valid_contours = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area >= min_area and area <= max_area:
+            valid_contours.append(contour)
+    return valid_contours
 
-# 寻找轮廓并进行尺寸筛选
-def find_contours(binary):
-    contours, _ = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
+# 得到轨迹顶点
+def get_route_vertices(vertices):
+    result_vertice = []
+    first_point = vertices[0]
+    second_point = vertices[1]
+    for i in range(len(first_point)):
+        resultx = first_point[i][0] + second_point[i][0]
+        resulty = first_point[i][1] + second_point[i][1]
+        resultx = resultx // 2
+        resulty = resulty // 2
+        result_vertice.append([resultx, resulty])
+    result_vertice = np.array(result_vertice, dtype=np.int32).reshape((-1, 1, 2))
+    return result_vertice
+
+def vertice_to_box(vertices):
+    boxes = []
+    for vertice in vertices:
+        centerx, centery = lb._cal_single_center(vertice)
+        distance = np.linalg.norm(np.array([centerx, centery]) - np.array([FRAME_CENTER_X, FRAME_CENTER_Y]))
+        if distance > 200:
+            continue
+        box = vertice.reshape(-1, 2) # Reshape to (4, 2)
+        box = np.int32(box)
+        box = ctrl.Reorder_Vertex_Pole(box)
+        boxes.append(box)
+    if len(boxes) == 1:
+        boxes.append(boxes[0])
+    return boxes
+
+# 透视变换
+def warp(frame, warped, vertice):
+    rotating_box = cv2.minAreaRect(vertice)
+    box = cv2.boxPoints(rotating_box)
+    box = np.int32(box)
+    box = ctrl.Reorder_Vertex(box)
+    warp_temp = lb.Perspective_Transform(frame, box)
+    warp_gray = cv2.cvtColor(warp_temp, cv2.COLOR_BGR2GRAY)
+    mean_value = np.mean(warp_gray)
+    if mean_value > 50:
+        warped = warp_temp
+    else:
+        print(f"Mean value too low: {mean_value}, skipping this contour.")
+    return warped
+
+# 得到下一个目标点，用于激光PID控制
+def get_target_pixel(route_vertices, phase, split):
+    start_vertice = route_vertices[phase][0]
+    end_vertice = route_vertices[(phase + 1) % 4][0]
+    target_pixel = []
+    targetx = int(start_vertice[0] + ((end_vertice[0] - start_vertice[0]) / 10) * split)
+    targety = int(start_vertice[1] + ((end_vertice[1] - start_vertice[1]) / 10) * split)
+    target_pixel.append(targetx)
+    target_pixel.append(targety)
+    return target_pixel
+
+def _find_intersection(line1, line2):
+    x1, y1, x2, y2 = line1
+    x3, y3, x4, y4 = line2
+    dx1 = x2 - x1
+    dy1 = y2 - y1
+    dx2 = x4 - x3
+    dy2 = y4 - y3
+
+    denom = dy2 * dx1 - dx2 * dy1
+    if abs(denom) < 1e-6:
         return None, None
 
-    valid_contour_vertex_small = []
-    contour_vertex_small = lb.Find_Poly(contours, shape=4, min_area=MIN_AREA_SMALL, max_area=MAX_AREA_SMALL, factor=0.1)
-    for vertex in contour_vertex_small:
-        center = lb._cal_single_center(vertex)
-        distance = np.hypot(center[0] - FRAME_CENTER_X, center[1] - FRAME_CENTER_Y)
-        if distance < 250:  # 只保留距离中心点较近的
-            valid_contour_vertex_small.append(vertex)
+    ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom
+    ub = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denom
 
-    return valid_contour_vertex_small
+    eps = 1e-6
+    return_x = int(x1 + ua * (x2 - x1))
+    return_y = int(y1 + ua * (y2 - y1))
+    if return_x < 0 or return_x >= CAMERA_WIDTH or return_y < 0 or return_y >= CAMERA_HEIGHT:
+        return None, None
 
-# 通过霍夫圆寻找棋子
-def find_chess(gray):
-    circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, dp=1, minDist=80, param1=150, param2=30, minRadius=20, maxRadius=50)
-    if circles is not None:
-        circles = np.uint16(np.around(circles))
-    return circles
+    return return_x, return_y
 
-# 通过yolo寻找棋子
-def find_chess_via_yolo(img, detector):
-    boxes, _, cls_ids = detector.detect(img)
-    black_centers = []
-    white_centers = []
-    for box, cls_id in zip(boxes, cls_ids):
-        x1, y1, x2, y2 = box
-        center_x = (x1 + x2) // 2
-        center_y = (y1 + y2) // 2
-        if cls_id == 0:  # 假设0是黑棋
-            black_centers.append((center_x, center_y))
-        elif cls_id == 1:  # 假设1是白棋
-            white_centers.append((center_x, center_y))
-    return black_centers, white_centers
-
-# 判断棋子颜色
-def distinguish_chess_color(roi):
-    roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    black_mask = cv2.inRange(roi_hsv, (0, 0, 0), (180, 255, 100))
-    white_mask = cv2.inRange(roi_hsv, (20, 0, 170), (160, 50, 255))
-    black_count = cv2.countNonZero(black_mask)
-    white_count = cv2.countNonZero(white_mask)
-    if black_count > white_count:
-        return "black"
+def get_pixel_online(route_vertices, current_pixel, phase):
+    # 结束标志位，若距离足够近则进入下一个phase
+    ending = False
+    # 得到起点和终点
+    start_vertice = route_vertices[phase][0]
+    end_vertice = route_vertices[(phase + 1) % 4][0]
+    # 计算直线方程
+    line1 = [start_vertice[0], start_vertice[1], end_vertice[0], end_vertice[1]]
+    dx = line1[2] - line1[0]
+    dy = line1[3] - line1[1]
+    k = dy / dx if dx != 0 else float('inf')
+    # 根据当前像素点和直线方程计算交点
+    if k == float('inf'):
+        line2 = [current_pixel[0], current_pixel[1], current_pixel[0], current_pixel[1] - 1]
+    elif k == 0:
+        line2 = [current_pixel[0], current_pixel[1], current_pixel[0] + 1, current_pixel[1]]
     else:
-        return "white"
+        line2 = [current_pixel[0], current_pixel[1], current_pixel[0] + 1, current_pixel[1] - (1 / k)]
+    intersectionx, intersectiony = _find_intersection(line1, line2)
+    # 目标点方向向量
+    direction_vector = np.array(end_vertice) - np.array(start_vertice)
+    direction_vector = direction_vector / np.linalg.norm(direction_vector)
+    # 移动步长
+    step_size = 5
+    # 得到目标像素,当没有算出交点时停留在当前像素
+    if intersectionx is None or intersectiony is None:
+        return (current_pixel[0], current_pixel[1]), ending
+    next_pixel = np.array([intersectionx, intersectiony]) + direction_vector * step_size
+    # 计算移动向量
+    move_vector = next_pixel - np.array(current_pixel)
+    if np.linalg.norm(move_vector) < step_size:
+        ending = True
+        return (np.array(end_vertice) -np.array(current_pixel)).astype(int).tolist(), ending
+    elif np.linalg.norm(move_vector) > 100:
+        return np.array([0, 0]).astype(int).tolist(), ending
+    else:
+        return np.array(move_vector).astype(int).tolist(), ending
 
-# 处理设备间通信，逻辑需要重点打磨
-def handle_pipe(conn):
-    global phase
-    global chess_color, chess_index, board_index
-    if conn.poll():
-        data = conn.recv()
-        command, value = ctrl.Parse_Input(data)
-        if command == "Move":
-            print(f"Received Move command with value: {value}")
-            chess_color.append("black") if int(value[1]) == 0 else chess_color.append("white")
-            chess_index.append(int(value[0]))
-            board_index.append(int(value[2]))
-            phase = 1
-        elif command == "task":
-            phase = 0
-            chess_index = []
-            board_index = []
-            task = int(value)
-        elif command == "OK":
-            if value == "5":
-                phase += 1
-                print(f"Phase incremented to {phase}")
+def get_target_pixel_pole(laser_point, center_point, binary, step=0.05): # step为弧度制
+    lx, ly = laser_point
+    if lx == 0 and ly == 0:
+        return (0, 0)
+    cx, cy = center_point
+    h, w = binary.shape
+    theta = math.atan2(cy - ly, cx - lx)
+    theta += step
+    dx = math.cos(theta)
+    dy = math.sin(theta)
+    max_distance = int(math.hypot(w, h)) + 2
+    for i in range(1, max_distance):
+        x = int(cx - i * dx)
+        y = int(cy - i * dy)
+        if x < 0 or x >= w or y < 0 or y >= h:
+            return (0, 0)
+        if binary[y, x] > 0:
+            return (x, y)
+    return (0, 0)
+    
 
+def get_target_pixel_continuous(route_vertices, current_pixel, phase):
+    # 结束标志位，若距离足够近则进入下一个phase
+    ending = False
+    # 得到起点和终点
+    start_vertice = route_vertices[phase][0]
+    end_vertice = route_vertices[(phase + 1) % 4][0]
+    # 计算方向向量并归一化
+    direction_vector = np.array(end_vertice) - np.array(start_vertice)
+    direction_vector = direction_vector / np.linalg.norm(direction_vector)
+    # 移动步长
+    step_size = 5
+    if np.linalg.norm(np.array(current_pixel) - np.array(end_vertice)) < step_size:
+        ending = True
+        return end_vertice.tolist(), ending  # If close enough to the end, snap to it
+    next_pixel = np.array(current_pixel) + direction_vector * step_size
+    return next_pixel.astype(int).tolist(), ending
 
+def get_laser_point(binary_img):
+    valid_contours = []
+    contours = find_contours(binary_img, min_area=MIN_LASER_AREA, max_area=MAX_LASER_AREA)
+    if contours is None or len(contours) == 0:
+        return None, None
+    for contour in contours:
+        (x, y), radius = cv2.minEnclosingCircle(contour)
+        circle_area = np.pi * radius * radius
+        if circle_area != 0 and abs((circle_area - circle_area)) / circle_area < 0.2:
+            valid_contours.append(contour)
+    if len(valid_contours) == 0:
+        return None, None
+    cx, cy = lb.Get_Center_Point(valid_contours, mode=lb.CENTER_MAX)
+    return cx, cy
+
+def get_laser_point_simultaneous(img, last_red, last_green, threshold=10):
+    # 允许覆盖标志位，防止激光点覆盖时检测不到
+    enable_cover = False
+    if np.linalg.norm(np.array(last_red) - np.array(last_green)) < threshold:
+        enable_cover = True
+    # 提取红色和绿色激光点
+    red = lb.Color_Extraction(img, color=lb.RED)
+    green = lb.Color_Extraction(img, color=lb.GREEN)
+    red_contours = find_contours(red, min_area=MIN_LASER_AREA, max_area=MAX_LASER_AREA)
+    green_contours = find_contours(green, min_area=MIN_LASER_AREA, max_area=MAX_LASER_AREA)
+    # 如果没有检测到激光点，则使用上一次的激光点位置
+    if red_contours is None or len(red_contours) == 0:
+        red_center = last_red
+    if green_contours is None or len(green_contours) == 0:
+        green_center = last_green
+    # 如果激光点被覆盖，则使用另一种颜色的激光点位置
+    if enable_cover and len(red_contours) == 0 and len(green_contours) != 0:
+        red_contours = green_contours
+    elif enable_cover and len(green_contours) == 0 and len(red_contours) != 0:
+        green_contours = red_contours
+    red_center = lb.Get_Center_Point(red_contours, mode=lb.CENTER_MAX)
+    green_center = lb.Get_Center_Point(green_contours, mode=lb.CENTER_MAX)
+    return red_center, green_center
+
+def get_laser_point_via_white(white_frame, red_frame, green_frame, red, green, last_red, last_green, roi_start, roi_end):
+    # 寻找并筛选轮廓
+    probable_contours = find_contours(white_frame, min_area=MIN_LASER_AREA, max_area=MAX_LASER_AREA)
+    probable_centers = []
+    probable_rois = []
+    probable_reds = []
+    probable_greens = []
+
+    # 得到轮廓中心
+    for contour in probable_contours:
+        contourx, contoury = lb._cal_single_center(contour)
+        if contourx > 0 and contoury > 0:
+            probable_centers.append((contourx, contoury))
+    # 根据轮廓中心在红色和绿色图像中提取ROI，并计算非零像素数量，找出红色和绿色激光点
+    for center in probable_centers:
+        x, y = center
+        roi_size = 40
+        red_roi = red_frame[max(0, y - roi_size):min(white_frame.shape[0], y + roi_size),
+                            max(0, x - roi_size):min(white_frame.shape[1], x + roi_size)]
+        green_roi = green_frame[max(0, y - roi_size):min(white_frame.shape[0], y + roi_size),
+                                max(0, x - roi_size):min(white_frame.shape[1], x + roi_size)]
+        red_count = cv2.countNonZero(red_roi)
+        # red_count = 100
+        green_count = cv2.countNonZero(green_roi)
+        if red_count > 0 and green_count > 0:
+            probable_reds.append((center, red_count))
+            probable_greens.append((center, green_count))
+        elif red_count > 0 and green_count == 0:
+            probable_reds.append((center, red_count))
+        elif green_count > 0 and red_count == 0:
+            probable_greens.append((center, green_count))
+    
+    # 根据非零像素数量排序，选择数量最多的作为激光点
+    probable_reds.sort(key=lambda x: x[1], reverse=True)
+    probable_greens.sort(key=lambda x: x[1], reverse=True)
+
+    red_center = (probable_reds[0][0][0] + roi_start[0], probable_reds[0][0][1] + roi_start[1]) if probable_reds else (0, 0)
+    green_center = (probable_greens[0][0][0] + roi_start[0], probable_greens[0][0][1] + roi_start[1]) if probable_greens else (0, 0)
+    roi_size = 40
+    if red_center[0] == 0 and red_center[1] == 0:
+        roi_red = red[max(0, last_red[1] - roi_size):min(red.shape[0], last_red[1] + roi_size),
+                        max(0, last_red[0] - roi_size):min(red.shape[1], last_red[0] + roi_size)]
+        if cv2.countNonZero(roi_red) > 0:
+            M = cv2.moments(roi_red)
+            if M["m00"] != 0:
+                cX = int(M["m10"] / M["m00"]) + max(0, last_red[0] - roi_size)
+                cY = int(M["m01"] / M["m00"]) + max(0, last_red[1] - roi_size)
+                red_center = (cX, cY)
+    if green_center[0] == 0 and green_center[1] == 0:
+        roi_green = green[max(0, last_green[1] - roi_size):min(green.shape[0], last_green[1] + roi_size),
+                                max(0, last_green[0] - roi_size):min(green.shape[1], last_green[0] + roi_size)]
+        if cv2.countNonZero(roi_green) > 0:
+            M = cv2.moments(roi_green)
+            if M["m00"] != 0:
+                cX = int(M["m10"] / M["m00"]) + max(0, last_green[0] - roi_size)
+                cY = int(M["m01"] / M["m00"]) + max(0, last_green[1] - roi_size)
+                green_center = (cX, cY)
+    return red_center, green_center
+
+def prune_skeleton(binary_img, min_length=50):
+    # 提取骨架轮廓
+    skeleton_contours, _ = cv2.findContours(binary_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    pruned_skeleton = np.zeros_like(binary_img)
+    for contour in skeleton_contours:
+        if cv2.arcLength(contour, closed=False) >= min_length:
+            cv2.drawContours(pruned_skeleton, [contour], -1, 255, 1)
+    return pruned_skeleton
+
+def get_roi_boundary(bounding_rect, roi_size=20):
+    x, y, w, h = bounding_rect
+    x1 = max(0, x - roi_size)
+    y1 = max(0, y - roi_size)
+    x2 = min(CAMERA_WIDTH, x + w + roi_size)
+    y2 = min(CAMERA_HEIGHT, y + h + roi_size)
+    return (x1, y1, x2, y2)
 
 def main(conn=None):
-    global isInitialized
-    global sorted_chess_board_position
-    global phase
-    global chess_color, chess_index, board_index
-    with lb.YOLODetector(MODEL_PATH, NUM_CLASSES, method="rknn", conf_thresh=0.5, iou_thresh=0.50, imgsz=(320,320)) as detector:
-        # 显示FPS
-        last_time = time.time()
-        current_time = time.time()
-        fps = 0
-        frame_count = 0
-        target_point = (640, 360)  # 目标点坐标，位于图像中心
-        current_point = (640, 360)  # 当前点坐标，初始化为图像中心
-        # 历史棋子和棋盘位置
-        last_black_chess_position = []
-        last_white_chess_position = []
-        sorted_chess_board_position = []
-        tic_tac_toe = TicTacToe()
-        black_tracker = ObjectTracker(num_objects=5)  # 假设最多有5个黑棋
-        white_tracker = ObjectTracker(num_objects=5)  # 假设最多有5个白棋
+    # 显示FPS
+    last_time = time.time()
+    current_time = time.time()
+    fps = 0
+    frame_count = 0
+    last_red = (0, 0)
+    last_green = (0, 0)
+    # 打开摄像头
+    cap = open_camera()
+    if cap is None:
+        return
+    ret, frame = cap.read()
+    warped = frame
+    if not ret:
+        print("Failed to grab initial frame")
+        cap.release()
+        return
+    phase = 0
+    try:
+        while True:
+            route_vertices = []
+            target_pixel = (0, 0)
+            bounding_rect = None
+            roi_center = (0, 0)
+            redx, redy = 0, 0
+            greenx, greeny = 0, 0
+            last_valid_vertices = []
+            # 获取图像
+            _, frame = cap.read()
+            # frame = cv2.imread("black.jpg")
+            # frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
+            # frame = frame[400:700, 500:800]
+            # frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
+            # 预处理
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # 寻找轮廓(包含尺寸筛选)
+            white_frame, black_frame, red_frame, green_frame= preprocess_frame(frame)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            white_frame = cv2.morphologyEx(white_frame, cv2.MORPH_CLOSE, kernel, iterations=1)
+            black_frame = cv2.morphologyEx(black_frame, cv2.MORPH_CLOSE, kernel, iterations=5)
+            black_roi = black_frame
+            red_roi = red_frame
+            green_roi = green_frame
+            black_contours = find_contours(black_frame)
+            # 筛选轮廓
+            valid_vertices = lb.Find_Poly(black_contours, shape=4, factor=0.1)
+            # 将轮廓顶点转换为矩形框，此处包含了对轮廓中心点距离图像中心的筛选
+            valid_vertices = vertice_to_box(valid_vertices)
+            last_valid_vertices = valid_vertices
+            if len(valid_vertices) > 1:
+                bounding_rect = cv2.boundingRect(np.concatenate(valid_vertices))
+                if bounding_rect[0] < 0 or bounding_rect[1] < 0 or bounding_rect[0] + bounding_rect[2] > CAMERA_WIDTH or bounding_rect[1] + bounding_rect[3] > CAMERA_HEIGHT:
+                    print(f"Warning: Bounding rectangle {bounding_rect} is out of image bounds. Skipping this frame.")
+                    bounding_rect = None
+            if bounding_rect is not None:
+                x1, y1, x2, y2 = get_roi_boundary(bounding_rect, roi_size=20)
+                black_roi = black_frame[y1:y2, x1:x2]
+                red_roi = red_frame[y1:y2, x1:x2]
+                white_roi = white_frame[y1:y2, x1:x2]
+                green_roi = green_frame[y1:y2, x1:x2]
+                red_center, green_center = get_laser_point_via_white(white_roi, red_roi, green_roi, red_frame, green_frame, last_red, last_green, (x1, y1), (x2, y2))
+                redx, redy = red_center
+                greenx, greeny = green_center
+                last_red = red_center
+                last_green = green_center
+                skeleton = cv2.ximgproc.thinning(cv2.resize(black_roi, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA))
+                skeleton = cv2.resize(skeleton, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
+                skeleton = cv2.dilate(skeleton, kernel, iterations=1)
+                # pruned_skeleton = prune_skeleton(skeleton, min_length=100) if skeleton is not None else None
+                route_contour = cv2.findContours(skeleton, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+                cv2.drawContours(frame[y1:y2, x1:x2], route_contour, -1, (255, 0, 0), 2)
+                roi_h, roi_w = black_roi.shape[:2]
+                roi_center = (roi_w // 2, roi_h // 2)
+                # 如果检测到有效轮廓，则进行路径计算
+                if len(valid_vertices) > 1:
+                    target_pixel = get_target_pixel_pole((redx - x1, redy - y1), roi_center, skeleton, step=0.1) if redx != 0 and redy != 0 else (0, 0)
+                    target_pixel = (target_pixel[0] + x1, target_pixel[1] + y1) if target_pixel != (0, 0) else (0, 0)
+                    cv2.circle(frame, (target_pixel[0], target_pixel[1]), 5, (255, 255, 255), -1) if target_pixel != (0, 0) else None
+                # 画出轮廓和激光点
+                # cv2.drawContours(frame, valid_vertices, -1, (0, 255, 0), 2)
+                if redx != 0 and redy != 0:
+                    cv2.circle(frame, (redx, redy), 5, (0, 0, 255), -1)
+            # 进行数据发送
+            if conn is not None:
+                msg = [0, redx, redy, target_pixel[0], target_pixel[1]]
+                conn.send(msg)
 
-        task = 1  # 当前任务
-        isInitialized = False  # 标记是否已初始化棋子位置
-
-        # 打开摄像头
-        cap = open_camera()
-        if cap is None:
-            return
-        ret, frame = cap.read()
-        warped = frame
-        if not ret:
-            print("Failed to grab initial frame")
-            cap.release()
-            return
-        try:
-            while True:
-                # 处理通信信息
-                handle_pipe(conn)
-                # 当前棋子位置(这里是每次循环更新的)
-                black_chess_position = []
-                white_chess_position = []
-                # 获取图像并进行预处理
-                _, frame = cap.read()
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                gray = cv2.GaussianBlur(gray, (5, 5), 0)
-                gray = cv2.createCLAHE(clipLimit=6.0, tileGridSize=(8, 8)).apply(gray)
-                gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-                pink_frame, black_frame, white_frame = preprocess_frame(frame)
-                # 找出黑白轮廓
-                black_contours, _ = cv2.findContours(black_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                white_contours, _ = cv2.findContours(white_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                # 通过YOLO检测棋子位置
-                black_chess_position, white_chess_position = find_chess_via_yolo(gray_bgr, detector)
-                # 若漏检，跳过此帧
-                if len(black_chess_position) != 5 or len(white_chess_position) != 5:
-                    continue
-                # 检测棋盘格
-                valid_contour_vertex_small = find_contours(black_frame)
-                cv2.drawContours(frame, valid_contour_vertex_small, -1, (0, 255, 0), 2) if valid_contour_vertex_small is not None else None
-                # 绘制出棋子位置并编号
-                black_chess_position.sort(key=lambda x: (x[1], x[0]))  # 按y坐标排序，y相同按x坐标排序
-                white_chess_position.sort(key=lambda x: (x[1], x[0]))
-
-                moved_id_black, new_position_black, distance_black = black_tracker.update(black_chess_position)
-                moved_id_white, new_position_white, distance_white = white_tracker.update(white_chess_position)
-                # 根据移动的棋子ID更新位置
-                if moved_id_black != -1:
-                    print(f"Black chess ID {moved_id_black} moved to {new_position_black} with distance {distance_black:.2f}")
-                    black_chess_position[moved_id_black] = new_position_black
-                    last_black_chess_position = black_chess_position.copy()
-                if moved_id_white != -1:
-                    print(f"White chess ID {moved_id_white} moved to {new_position_white} with distance {distance_white:.2f}")
-                    white_chess_position[moved_id_white] = new_position_white
-                    last_white_chess_position = white_chess_position.copy()
-
-                for i, (bx, by) in enumerate(black_tracker.tracked_centers):
-                    cv2.putText(frame, f"B{i+1}", (bx, by), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    cv2.circle(frame, (bx, by), 5, (0, 0, 255), -1)
-                for i, (wx, wy) in enumerate(white_tracker.tracked_centers):
-                    cv2.putText(frame, f"W{i+1}", (wx, wy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                    cv2.circle(frame, (wx, wy), 5, (255, 255, 255), -1)
-
-                # 获取当前任务的目标点
-                if task == 1:
-                    last_black_chess_position, last_white_chess_position, valid_contour_vertex_small = task_1(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, black_tracker, conn)
-                elif task == 2:
-                    last_black_chess_position, last_white_chess_position, valid_contour_vertex_small = task_2(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, black_tracker, white_tracker, conn)
-                elif task == 3:
-                    last_black_chess_position, last_white_chess_position, valid_contour_vertex_small = task_3(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, black_tracker, white_tracker, conn)
-                elif task == 4:
-                    last_black_chess_position, last_white_chess_position, valid_contour_vertex_small = task_4(black_chess_position, white_chess_position, last_black_chess_position, last_white_chess_position, valid_contour_vertex_small, tic_tac_toe, black_tracker, conn)
-
-                if sorted_chess_board_position is not None:
-                    for i, pos in enumerate(sorted_chess_board_position):
-                        cv2.putText(frame, f"S{i+1}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                        cv2.circle(frame, pos, 5, (0, 255, 0), -1)
-
-
-                black_frame = cv2.resize(black_frame, (640, 480))
-                # gray = cv2.resize(gray, (640, 480))
-                frame = cv2.resize(frame, (640, 480))
-                # white_frame = cv2.resize(white_frame, (640, 480))
-                gray_bgr = cv2.resize(gray_bgr, (640, 480))
-                cv2.imshow("Gray BGR Frame", gray_bgr)
-                # cv2.imshow("Gray Frame", gray)
-                # cv2.imshow("White Frame", white_frame)
-                cv2.imshow("Original Frame", frame)
-                cv2.imshow("Black Frame", black_frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-        except KeyboardInterrupt:
-            print("Interrupted by user")
-        except Exception as e:
-            print(f"An error occurred: {e}")
-        finally:
-            cap.release()
-            cv2.destroyAllWindows()
+            # 显示图像
+            # white_frame = cv2.resize(white_frame, (640, 360))  # Resize for better display
+            # black_frame = cv2.resize(black_frame, (640, 360))  # Resize for better display
+            frame = cv2.resize(frame, (640, 360))  # Resize for better display
+            # red_frame = cv2.resize(red_frame, (640, 360))  # Resize for better display
+            # green_frame = cv2.resize(green_frame, (640, 360))  # Resize for better display
+            # cv2.imshow('White Frame', white_frame)
+            # cv2.imshow('Red Frame', red_frame)
+            # cv2.imshow('Black Frame', black_frame)
+            # cv2.imshow('Green Frame', green_frame)
+            # black_roi = cv2.resize(black_roi, (640, 360))  # Resize for better display
+            # cv2.imshow('Black ROI', black_roi)
+            cv2.imshow('Original Frame', frame)
+            # cv2.imshow("Skeleton", skeleton)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+            frame_count += 1
+            current_time = time.time()
+            if current_time - last_time >= 1.0:
+                fps = frame_count / (current_time - last_time)
+                print(f"FPS: {fps:.2f}")
+                frame_count = 0
+                last_time = current_time
+    
+    except KeyboardInterrupt:
+        print("Interrupted by user")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
