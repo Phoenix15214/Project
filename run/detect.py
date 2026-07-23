@@ -15,8 +15,10 @@ CAMERA_WIDTH = 1280 # 1080p 1920*1080
 CAMERA_HEIGHT = 720 # 1080p 1920*1080
 FRAME_CENTER_X = CAMERA_WIDTH // 2
 FRAME_CENTER_Y = CAMERA_HEIGHT // 2
+TARGET_X, TARGET_Y = 640, 560
 AVG_SLOPE_FILTER_THRESHOLD = 1
 white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
+frame_share = ctrl.MemoryShare(name='shared_frame', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
 
 # 打开摄像头
 def open_camera():
@@ -26,7 +28,7 @@ def open_camera():
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
         cap.set(cv2.CAP_PROP_EXPOSURE, 30)
         actual_auto_exp = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
         actual_exp = cap.get(cv2.CAP_PROP_EXPOSURE)
@@ -419,40 +421,27 @@ def find_poly(black_frame, min_area=None, max_area=None):
     valid_contours = lb.Find_Poly(contours)
     return valid_contours
 
-import cv2
-import numpy as np
+def get_grab_state(target_center, pink_center, distance_threshold=100):
+    if target_center is None or pink_center is None:
+        return False
 
-def sigmoid_curve_with_threshold(image_gray, k=5.0, threshold=128):
-    """
-    带拐点控制的 S 形灰度映射（Sigmoid 型）
-    让低于阈值的像素更黑，高于阈值的像素更白
+    distance = np.linalg.norm(np.array(target_center) - np.array(pink_center))
+    return distance < distance_threshold
 
-    :param image_gray: 输入灰度图，uint8 类型，shape (H, W)
-    :param k: 陡峭系数，推荐 2.0 ~ 10.0，越大过渡越锐利
-    :param threshold: 拐点阈值（0~255），该灰度值处的输出正好为 128（中间灰）
-                      例如 threshold=150 表示只有大于150的才会变白，小于150的变黑
-    :return: 处理后的灰度图，uint8 类型
-    """
-    # 将阈值归一化到 [0,1]
-    T = np.clip(threshold / 255.0, 0.01, 0.99)  # 避免极端值导致数值不稳定
+def get_closest_center(centers, target_center):
+    if not centers or target_center is None:
+        return None
 
-    # 归一化像素值到 [0,1]
-    img_float = image_gray.astype(np.float32) / 255.0
+    closest_center = min(centers, key=lambda c: np.linalg.norm(np.array(c) - np.array(target_center)))
+    return closest_center
 
-    # 计算 sigmoid 值
-    S = 1.0 / (1.0 + np.exp(-k * (img_float - T)))
-    # 端点归一化，保证输入 0 → 输出 0，输入 1 → 输出 1
-    S0 = 1.0 / (1.0 + np.exp(k * T))          # 对应 x=0
-    S1 = 1.0 / (1.0 + np.exp(-k * (1.0 - T))) # 对应 x=1
-    transformed = (S - S0) / (S1 - S0)
+def find_lines_via_hough(black_frame, min_line_length=50, max_line_gap=20):
+    edges = cv2.Canny(black_frame, 50, 150)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=min_line_length, maxLineGap=max_line_gap)
 
-    # 截断并转回 uint8
-    transformed = np.clip(transformed, 0.0, 1.0)
-    return (transformed * 255).astype(np.uint8)
+    return lines
 
-
-
-def main(conn=None):
+def main(conn=None, frame_ready=None):
     # 显示FPS
     last_time = time.time()
     current_time = time.time()
@@ -461,37 +450,70 @@ def main(conn=None):
     last_red = (0, 0)
     last_green = (0, 0)
     # 打开摄像头
-    cap = open_camera()
-    if cap is None:
-        return
-    ret, frame = cap.read()
-    if not ret:
-        print("Failed to grab initial frame")
-        cap.release()
-        return
-    phase = 0
+    cap = None
+    if frame_ready is None:
+        cap = open_camera()
+        if cap is None:
+            return
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab initial frame")
+            cap.release()
+            return
     try:
         while True:
             # 获取图像
-            _, frame = cap.read()
+            if frame_ready is not None:
+                if frame_ready.value:
+                    frame = frame_share.read()
+                    frame_ready.value = False
+                else:
+                    time.sleep(0.01)
+                    continue
+            else:
+                ret, frame = cap.read()
+                print("从摄像头获取图像")
+                if not ret:
+                    print("Failed to grab frame")
+                    break
             # 预处理
             red_frame, black_frame, pink_frame, gray= preprocess_frame(frame)
-            # 对灰度图进行增强
-            gray = lb.Sigmoid_Curve_Transform(gray, k=15.0, threshold=200)
+            # 对预处理得到的图进行后处理
+            # gray = lb.Sigmoid_Curve_Transform_LUT(gray, k=15.0, threshold=150)
             # gray = cv2.createCLAHE(clipLimit=8.0, tileGridSize=(8, 8)).apply(gray)
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-            binary = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY_INV)[1]
+            binary = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY_INV)[1]
             binary = cv2.dilate(binary, kernel, iterations=2)
             pink_frame = cv2.erode(pink_frame, kernel, iterations=1)
             pink_frame = cv2.dilate(pink_frame, kernel, iterations=3)
+
+            # lines = find_lines_via_hough(black_frame, min_line_length=50, max_line_gap=20)
+            # if lines is not None:
+            #     for line in lines:
+            #         x1, y1, x2, y2 = line
+            #         cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            # 找出可以通行的网格
             passable_grid = get_passable_grid(binary, grid_count=10)
             start = (8, 5)  # 起点坐标 (row, col)
             goal = (0, 9)  # 终点坐标 (row, col)
             astar = AStar(passable_grid)
             path = astar.find_path(start, goal)
             path_frame = frame.copy()
+            # 绘制平滑路径
             path_frame = draw_smooth_path_on_grid(passable_grid, path, start, goal, cell_size=20, smooth_points=400, show_raw=True)
+            # 寻找目标（粉色纸片）
             centers = find_object(pink_frame, min_area=2000, max_area=500000)
+            closest_center = get_closest_center(centers, (TARGET_X, TARGET_Y))
+            offsetx, offsety = closest_center[0] - TARGET_X, closest_center[1] - TARGET_Y if closest_center is not None else (0, 0)
+            if conn is not None:
+                conn.send([0, offsetx, offsety])
+            grab_state = get_grab_state(closest_center, (TARGET_X, TARGET_Y), distance_threshold=50)
+            cv2.circle(frame, (TARGET_X, TARGET_Y), 5, (0, 255, 255), -1)
+            if grab_state:
+                cv2.putText(frame, "Grab State: True", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            else:
+                cv2.putText(frame, "Grab State: False", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
             if centers is not None:
                 for center in centers:
                     cv2.circle(frame, center, 5, (0, 255, 0), -1)
@@ -517,12 +539,12 @@ def main(conn=None):
             gray = cv2.resize(gray, (640, 360))
             binary = cv2.resize(binary, (640, 360))
             # pink_frame = cv2.resize(pink_frame, (640, 360))
-            path_frame = cv2.resize(path_frame, (640, 360))
+            # path_frame = cv2.resize(path_frame, (640, 360))
             cv2.imshow('Original Frame', frame)
             cv2.imshow('Gray Frame', gray)
             cv2.imshow("Binary", binary)
             # cv2.imshow("Pink Frame", pink_frame)
-            cv2.imshow("Path Frame", path_frame)
+            # cv2.imshow("Path Frame", path_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             frame_count += 1
@@ -538,8 +560,9 @@ def main(conn=None):
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
-        cap.release()
+        cap.release() if cap is not None else None
         cv2.destroyAllWindows()
+        frame_share.close() if frame_share is not None else None
 
 if __name__ == "__main__":
     main()
