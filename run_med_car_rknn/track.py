@@ -132,7 +132,6 @@ def hl(image):
         if abs(avg_slope) > 999:
             center_angle = 0.0
         else:
-            # center_angle = (90 - angle_horiz) if angle_horiz > 0 else (90 + angle_horiz)
             center_angle = 90 - angle_horiz if angle_horiz > 0 else -90 - angle_horiz
 
         # 绘制中心线及其他可视化
