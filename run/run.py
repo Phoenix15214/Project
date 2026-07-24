@@ -12,19 +12,20 @@ from track import main as track_main
 pipe1, pipe2 = Pipe()
 
 def main():
-    frame_ready = Value('b', False)
+    frame_ready1 = Value('b', False)
+    frame_ready2 = Value('b', False)
     try:
-        p1 = Process(target=detect_main, args=(pipe1, frame_ready,))
+        p1 = Process(target=detect_main, args=(pipe1, frame_ready1, frame_ready2))
         p2 = Process(target=transmit_main, args=(pipe2,))
-        p3 = Process(target=track_main, args=(frame_ready,))
+        p3 = Process(target=track_main, args=(frame_ready1, frame_ready2))
 
-        p1.start()
-        p2.start()
         p3.start()
+        p2.start()
+        p1.start()
 
-        p1.join()
-        p2.join()
         p3.join()
+        p2.join()
+        p1.join()
     except KeyboardInterrupt:
         print("KeyboardInterrupt received. Terminating processes...")
         p1.terminate()

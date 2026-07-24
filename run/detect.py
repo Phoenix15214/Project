@@ -19,16 +19,17 @@ TARGET_X, TARGET_Y = 640, 560
 AVG_SLOPE_FILTER_THRESHOLD = 1
 white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
 frame_share = ctrl.MemoryShare(name='shared_frame', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
+frame_share2 = ctrl.MemoryShare(name='shared_frame2', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
 
 # 打开摄像头
-def open_camera():
+def open_camera(camera_index=0):
     try:
-        cap = cv2.VideoCapture(0)
+        cap = cv2.VideoCapture(camera_index)
         cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
         cap.set(cv2.CAP_PROP_EXPOSURE, 30)
         actual_auto_exp = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
         actual_exp = cap.get(cv2.CAP_PROP_EXPOSURE)
@@ -441,7 +442,7 @@ def find_lines_via_hough(black_frame, min_line_length=50, max_line_gap=20):
 
     return lines
 
-def main(conn=None, frame_ready=None):
+def main(conn=None, frame_ready1=None, frame_ready2=None):
     # 显示FPS
     last_time = time.time()
     current_time = time.time()
@@ -451,8 +452,9 @@ def main(conn=None, frame_ready=None):
     last_green = (0, 0)
     # 打开摄像头
     cap = None
-    if frame_ready is None:
-        cap = open_camera()
+    cap2 = None
+    if frame_ready1 is None:
+        cap = open_camera(0)
         if cap is None:
             return
         ret, frame = cap.read()
@@ -460,91 +462,137 @@ def main(conn=None, frame_ready=None):
             print("Failed to grab initial frame")
             cap.release()
             return
+    if frame_ready2 is None:
+        cap2 = open_camera(1)
+        if cap2 is None:
+            print("Camera 2 could not be opened.")
+            frame_ready2 = None
+        ret2, frame2 = cap2.read() if cap2 is not None else (False, None)
+        if not ret2:
+            print("Failed to grab initial frame from camera 2")
+            cap2.release()
+    
     try:
         while True:
             # 获取图像
-            if frame_ready is not None:
-                if frame_ready.value:
+            frame_not_ready1 = False
+            frame_not_ready2 = False
+            frame = None
+            frame2 = None
+            if frame_ready1 is not None:
+                if frame_ready1.value:
                     frame = frame_share.read()
-                    frame_ready.value = False
+                    frame_ready1.value = False
                 else:
-                    time.sleep(0.01)
-                    continue
+                    frame_not_ready1 = True
             else:
                 ret, frame = cap.read()
-                print("从摄像头获取图像")
                 if not ret:
-                    print("Failed to grab frame")
+                    print("Failed to grab frame from camera 1")
                     break
-            # 预处理
-            red_frame, black_frame, pink_frame, gray= preprocess_frame(frame)
-            # 对预处理得到的图进行后处理
-            # gray = lb.Sigmoid_Curve_Transform_LUT(gray, k=15.0, threshold=150)
-            # gray = cv2.createCLAHE(clipLimit=8.0, tileGridSize=(8, 8)).apply(gray)
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-            binary = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY_INV)[1]
-            binary = cv2.dilate(binary, kernel, iterations=2)
-            pink_frame = cv2.erode(pink_frame, kernel, iterations=1)
-            pink_frame = cv2.dilate(pink_frame, kernel, iterations=3)
 
-            # lines = find_lines_via_hough(black_frame, min_line_length=50, max_line_gap=20)
-            # if lines is not None:
-            #     for line in lines:
-            #         x1, y1, x2, y2 = line
-            #         cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            # 找出可以通行的网格
-            passable_grid = get_passable_grid(binary, grid_count=10)
-            start = (8, 5)  # 起点坐标 (row, col)
-            goal = (0, 9)  # 终点坐标 (row, col)
-            astar = AStar(passable_grid)
-            path = astar.find_path(start, goal)
-            path_frame = frame.copy()
-            # 绘制平滑路径
-            path_frame = draw_smooth_path_on_grid(passable_grid, path, start, goal, cell_size=20, smooth_points=400, show_raw=True)
-            # 寻找目标（粉色纸片）
-            centers = find_object(pink_frame, min_area=2000, max_area=500000)
-            closest_center = get_closest_center(centers, (TARGET_X, TARGET_Y))
-            offsetx, offsety = closest_center[0] - TARGET_X, closest_center[1] - TARGET_Y if closest_center is not None else (0, 0)
-            if conn is not None:
-                conn.send([0, offsetx, offsety])
-            grab_state = get_grab_state(closest_center, (TARGET_X, TARGET_Y), distance_threshold=50)
-            cv2.circle(frame, (TARGET_X, TARGET_Y), 5, (0, 255, 255), -1)
-            if grab_state:
-                cv2.putText(frame, "Grab State: True", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            if frame_ready2 is not None:
+                if frame_ready2.value:
+                    frame2 = frame_share2.read()
+                    frame_ready2.value = False
+                else:
+                    frame_not_ready2 = True
             else:
-                cv2.putText(frame, "Grab State: False", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                ret2, frame2 = cap2.read() if cap2 is not None else (False, None)
+                if not ret2 and cap2 is not None:
+                    print("Failed to grab frame from camera 2")
+                    break
+            
+            if frame_not_ready1 and frame_not_ready2:
+                time.sleep(0.01)
+                continue
 
-            if centers is not None:
-                for center in centers:
-                    cv2.circle(frame, center, 5, (0, 255, 0), -1)
-                    cv2.putText(frame, f"({center[0]}, {center[1]})", (center[0] + 10, center[1] - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            if not frame_not_ready1:
+                # 预处理
+                red_frame, black_frame, pink_frame, gray= preprocess_frame(frame)
+                # 对预处理得到的图进行后处理
+                # gray = lb.Sigmoid_Curve_Transform_LUT(gray, k=15.0, threshold=150)
+                # gray = lb.Adaptive_Sigmoid_Transform(gray, grid_size=(8, 8), k_base=10.0, k_range=(5.0, 15.0))
+                # gray = lb.Adaptive_Sigmoid_Transform_Fast(gray, k_base=10.0, k_range=(5.0, 15.0), filter_size=31)
+                # gray = lb.Adaptive_Sigmoid_Transform_UMat(gray, grid_size=(8, 8), k_base=10.0, k_range=(5.0, 15.0))
+                # gray = cv2.createCLAHE(clipLimit=8.0, tileGridSize=(8, 8)).apply(gray)
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                binary = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY_INV)[1]
+                binary = cv2.dilate(binary, kernel, iterations=2)
+                pink_frame = cv2.erode(pink_frame, kernel, iterations=1)
+                pink_frame = cv2.dilate(pink_frame, kernel, iterations=3)
 
-            if path is not None:
-                for (row, col) in path:
-                    grid_height = binary.shape[0] // 10
-                    grid_width = binary.shape[1] // 10
-                    center_x = col * grid_width + grid_width // 2
-                    center_y = row * grid_height + grid_height // 2
-                    cv2.circle(frame, (center_x, center_y), 5, (255, 0, 0), -1)
+                # lines = find_lines_via_hough(black_frame, min_line_length=50, max_line_gap=20)
+                # if lines is not None:
+                #     for line in lines:
+                #         x1, y1, x2, y2 = line
+                #         cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                # 找出可以通行的网格
+                passable_grid = get_passable_grid(binary, grid_count=10)
+                start = (8, 5)  # 起点坐标 (row, col)
+                goal = (0, 9)  # 终点坐标 (row, col)
+                astar = AStar(passable_grid)
+                path = astar.find_path(start, goal)
+                path_frame = frame.copy()
+                # 绘制平滑路径
+                path_frame = draw_smooth_path_on_grid(passable_grid, path, start, goal, cell_size=20, smooth_points=400, show_raw=True)
+                # 寻找目标（粉色纸片）
+                centers = find_object(pink_frame, min_area=2000, max_area=None)
+                closest_center = get_closest_center(centers, (TARGET_X, TARGET_Y))
+                offsetx, offsety = 0, 0
+                if closest_center is not None:
+                    offsetx = closest_center[0] - TARGET_X
+                    offsety = closest_center[1] - TARGET_Y
+                else:
+                    offsetx = 0
+                    offsety = 0
+                offsetx += 1000
+                offsety += 1000
+                # 与MCU进行通信
+                if conn is not None:
+                    conn.send([0, offsetx, offsety])
+                grab_state = get_grab_state(closest_center, (TARGET_X, TARGET_Y), distance_threshold=50)
+                cv2.circle(frame, (TARGET_X, TARGET_Y), 5, (0, 255, 255), -1)
+                if grab_state:
+                    cv2.putText(frame, "Grab State: True", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                else:
+                    cv2.putText(frame, "Grab State: False", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-            # if centers is not None:
-            #     for center in centers:
-            #         cv2.circle(frame, center, 5, (0, 255, 0), -1)
-            #         cv2.putText(frame, f"({center[0]}, {center[1]})", (center[0] + 10, center[1] - 10),
-            #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                if centers is not None:
+                    for center in centers:
+                        cv2.circle(frame, center, 5, (0, 255, 0), -1)
+                        cv2.putText(frame, f"({center[0]}, {center[1]})", (center[0] + 10, center[1] - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+                if path is not None:
+                    for (row, col) in path:
+                        grid_height = binary.shape[0] // 10
+                        grid_width = binary.shape[1] // 10
+                        center_x = col * grid_width + grid_width // 2
+                        center_y = row * grid_height + grid_height // 2
+                        cv2.circle(frame, (center_x, center_y), 5, (255, 0, 0), -1)
+
+                # if centers is not None:
+                #     for center in centers:
+                #         cv2.circle(frame, center, 5, (0, 255, 0), -1)
+                #         cv2.putText(frame, f"({center[0]}, {center[1]})", (center[0] + 10, center[1] - 10),
+                #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
             # 显示图像
-            frame = cv2.resize(frame, (640, 360))
-            gray = cv2.resize(gray, (640, 360))
-            binary = cv2.resize(binary, (640, 360))
-            # pink_frame = cv2.resize(pink_frame, (640, 360))
-            # path_frame = cv2.resize(path_frame, (640, 360))
-            cv2.imshow('Original Frame', frame)
-            cv2.imshow('Gray Frame', gray)
-            cv2.imshow("Binary", binary)
-            # cv2.imshow("Pink Frame", pink_frame)
-            # cv2.imshow("Path Frame", path_frame)
+            if not frame_not_ready1:
+                frame = cv2.resize(frame, (640, 360))
+                gray = cv2.resize(gray, (640, 360))
+                binary = cv2.resize(binary, (640, 360))
+                # pink_frame = cv2.resize(pink_frame, (640, 360))
+                # path_frame = cv2.resize(path_frame, (640, 360))
+                cv2.imshow('Original Frame', frame)
+                cv2.imshow('Gray Frame', gray)
+                cv2.imshow("Binary", binary)
+                # cv2.imshow("Pink Frame", pink_frame)
+                # cv2.imshow("Path Frame", path_frame)
+            if not frame_not_ready2:
+                frame2 = cv2.resize(frame2, (640, 360))
+                cv2.imshow('Camera 2 Frame', frame2)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             frame_count += 1
@@ -563,6 +611,7 @@ def main(conn=None, frame_ready=None):
         cap.release() if cap is not None else None
         cv2.destroyAllWindows()
         frame_share.close() if frame_share is not None else None
+        frame_share2.close() if frame_share2 is not None else None
 
 if __name__ == "__main__":
     main()

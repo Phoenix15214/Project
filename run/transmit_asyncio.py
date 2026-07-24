@@ -125,7 +125,7 @@ async def Send_Serial(pack, send_ready: asyncio.Event):
         try:
             await send_ready.wait()
             if pack is not None:
-                pack.insert_byte(len(message))  # 包头
+                pack.insert_byte(0x08)  # 包头
                 for i in range(len(message)):
                     pack.insert_three_bytes(pack.num_to_bytes(message[i]))
                 pack.send_packet()
@@ -220,6 +220,7 @@ async def main_task(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloa
     send_ready_serial = asyncio.Event()
     Connected = asyncio.Event()
     require_refresh.set()
+    print(f"程序已启动，监听端口: 11451, 串口: {port}, 波特率: {baudrate}, 发送方法: {method}")
 
     # 创建任务
     tasks = [

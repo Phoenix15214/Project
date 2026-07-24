@@ -80,7 +80,7 @@ def hl(image):
     # 遍历所有直线
     if lines is not None:
         for line in lines:
-            x1, y1, x2, y2 = line[0]
+            x1, y1, x2, y2 = line
             # 绘制所有直线
             cv2.line(output_image, (x2, y2), (x1, y1), (255, 0, 255), 4)
             # 计算线段的斜率,垂直直线给一个大值
@@ -220,7 +220,7 @@ def main(shm_name, frame_ready, conn=None):
         valid_lines = []
         if lines is not None:
             for line in lines:
-                x1, y1, x2, y2 = line[0]
+                x1, y1, x2, y2 = line
                 # cv2.line(output_image, (x2, y2), (x1, y1), (255, 0, 255), 4)
                 # 计算线段的斜率,垂直直线给一个大值
                 if x2 != x1:
