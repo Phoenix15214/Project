@@ -5,11 +5,11 @@ import process_lib.control_lib as ctrl
 from multiprocessing import shared_memory, Value, Pipe
 from typing import List, Tuple, Optional
 from scipy.interpolate import splprep, splev
+from sklearn.cluster import DBSCAN
 import heapq
 import time
 import math
 import os
-
 CAMERA_FPS = 30
 CAMERA_WIDTH = 1280 # 1080p 1920*1080
 CAMERA_HEIGHT = 720 # 1080p 1920*1080
@@ -47,12 +47,10 @@ def preprocess_frame(frame):
     red_mask2 = cv2.inRange(img_hsv, (165, 25, 50), (180, 255, 255))
     red_frame = cv2.bitwise_and(white, white, mask=cv2.bitwise_or(red_mask1, red_mask2))
     pink_mask = cv2.inRange(img_hsv, (130, 20, 100), (180, 150, 255))
-    black_mask = cv2.inRange(img_hsv, (0, 0, 0), (180, 255, 150))
-    black_frame = cv2.bitwise_and(white, white, mask=black_mask)
     img_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     pink_frame = cv2.bitwise_and(white, white, mask=pink_mask)
 
-    return red_frame, black_frame, pink_frame, img_gray
+    return red_frame, pink_frame, img_gray
 
 class AStar:
     """A*寻路算法实现（二维网格）"""
@@ -432,16 +430,76 @@ def get_grab_state(target_center, pink_center, distance_threshold=100):
 def get_closest_center(centers, target_center):
     if not centers or target_center is None:
         return None
+    if len(centers) == 0:
+        return None
 
     closest_center = min(centers, key=lambda c: np.linalg.norm(np.array(c) - np.array(target_center)))
     return closest_center
 
 def find_lines_via_hough(black_frame, min_line_length=50, max_line_gap=20):
     edges = cv2.Canny(black_frame, 50, 150)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=min_line_length, maxLineGap=max_line_gap)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=min_line_length, maxLineGap=max_line_gap)
 
     return lines
 
+def get_intersections(lines):
+    lengthen = 150
+    intersections = []
+    if lines is None:
+        return intersections
+
+    for i in range(len(lines)):
+        for j in range(i + 1, len(lines)):
+            line1 = lines[i]
+            line2 = lines[j]
+
+            x1, y1, x2, y2 = line1
+            x3, y3, x4, y4 = line2
+
+            denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+            if abs(denom) <= 0.8:
+                continue  # 平行或接近平行的线段，忽略
+
+            px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / denom
+            py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denom
+
+            if min(x1, x2) - lengthen <= px <= max(x1, x2) + lengthen and min(y1, y2) - lengthen <= py <= max(y1, y2) + lengthen and \
+               min(x3, x4) - lengthen <= px <= max(x3, x4) + lengthen and min(y3, y4) - lengthen <= py <= max(y3, y4) + lengthen:
+                intersections.append((int(px), int(py)))
+
+    return intersections
+
+def find_dense_clusters(points, center_x, width, eps, min_samples=3):
+    if points is None or len(points) == 0:
+        return np.empty((0, 2))
+    points = np.asarray(points)
+    if points.ndim != 2 or points.shape[1] != 2:
+        return np.empty((0, 2))
+    # ---------- 1. 按 x 筛选（向量化） ----------
+    x_min = center_x - width / 2.0
+    x_max = center_x + width / 2.0
+    mask = (points[:, 0] >= x_min) & (points[:, 0] <= x_max)
+    filtered = points[mask]
+
+    if len(filtered) < min_samples:
+        return np.empty((0, 2))
+
+    # ---------- 2. 密度聚类（DBSCAN） ----------
+    clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(filtered)
+    labels = clustering.labels_
+
+    # ---------- 3. 计算每个簇的平均坐标（仅循环簇数，通常很少） ----------
+    unique_labels = np.unique(labels)
+    centers = []
+    for label in unique_labels:
+        if label == -1:          # 噪声点，忽略
+            continue
+        cluster_points = filtered[labels == label]
+        center = np.mean(cluster_points, axis=0)
+        centers.append(center)
+
+    return centers
+        
 def main(conn=None, frame_ready1=None, frame_ready2=None):
     # 显示FPS
     last_time = time.time()
@@ -509,24 +567,32 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
 
             if not frame_not_ready1:
                 # 预处理
-                red_frame, black_frame, pink_frame, gray= preprocess_frame(frame)
+                red_frame, pink_frame, gray= preprocess_frame(frame)
                 # 对预处理得到的图进行后处理
+                gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
                 # gray = lb.Sigmoid_Curve_Transform_LUT(gray, k=15.0, threshold=150)
                 # gray = lb.Adaptive_Sigmoid_Transform(gray, grid_size=(8, 8), k_base=10.0, k_range=(5.0, 15.0))
-                # gray = lb.Adaptive_Sigmoid_Transform_Fast(gray, k_base=10.0, k_range=(5.0, 15.0), filter_size=31)
-                # gray = lb.Adaptive_Sigmoid_Transform_UMat(gray, grid_size=(8, 8), k_base=10.0, k_range=(5.0, 15.0))
-                # gray = cv2.createCLAHE(clipLimit=8.0, tileGridSize=(8, 8)).apply(gray)
+                # gray = lb.Adaptive_Sigmoid_Transform_UMat(gray, grid_size=(8, 8), k_base=15.0, k_range=(10.0, 35.0))
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                binary = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY_INV)[1]
+                binary = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)[1]
+                binary = cv2.erode(binary, kernel, iterations=1)
                 binary = cv2.dilate(binary, kernel, iterations=2)
                 pink_frame = cv2.erode(pink_frame, kernel, iterations=1)
                 pink_frame = cv2.dilate(pink_frame, kernel, iterations=3)
 
-                # lines = find_lines_via_hough(black_frame, min_line_length=50, max_line_gap=20)
-                # if lines is not None:
-                #     for line in lines:
-                #         x1, y1, x2, y2 = line
-                #         cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                lines = find_lines_via_hough(binary, min_line_length=50, max_line_gap=20)
+                if lines is not None:
+                    # for line in lines:
+                    #     x1, y1, x2, y2 = line
+                    #     cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    intersections = get_intersections(lines)
+                    valid_intersections = find_dense_clusters(intersections, center_x=FRAME_CENTER_X, width=300, eps=50, min_samples=3)
+                    if len(valid_intersections) > 0:
+                        closest_destination = get_closest_center(valid_intersections, (FRAME_CENTER_X, FRAME_CENTER_Y))
+                        if closest_destination is not None:
+                            cv2.circle(frame, (int(closest_destination[0]), int(closest_destination[1])), 10, (0, 255, 0), -1)
+                    # for center in valid_intersections:
+                    #     cv2.circle(frame, (int(center[0]), int(center[1])), 5, (0, 0, 255), -1)
                 # 找出可以通行的网格
                 passable_grid = get_passable_grid(binary, grid_count=10)
                 start = (8, 5)  # 起点坐标 (row, col)
@@ -572,12 +638,6 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
                         center_y = row * grid_height + grid_height // 2
                         cv2.circle(frame, (center_x, center_y), 5, (255, 0, 0), -1)
 
-                # if centers is not None:
-                #     for center in centers:
-                #         cv2.circle(frame, center, 5, (0, 255, 0), -1)
-                #         cv2.putText(frame, f"({center[0]}, {center[1]})", (center[0] + 10, center[1] - 10),
-                #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-
             # 显示图像
             if not frame_not_ready1:
                 frame = cv2.resize(frame, (640, 360))
@@ -590,9 +650,9 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
                 cv2.imshow("Binary", binary)
                 # cv2.imshow("Pink Frame", pink_frame)
                 # cv2.imshow("Path Frame", path_frame)
-            if not frame_not_ready2:
-                frame2 = cv2.resize(frame2, (640, 360))
-                cv2.imshow('Camera 2 Frame', frame2)
+            # if not frame_not_ready2:
+            #     frame2 = cv2.resize(frame2, (640, 360))
+            #     cv2.imshow('Camera 2 Frame', frame2)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             frame_count += 1
