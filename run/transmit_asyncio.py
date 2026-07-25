@@ -8,7 +8,7 @@ import struct
 import asyncio
 
 config_message = []
-message = [0, 0, 0, 1, 0, 0, 0, 0]
+message = [0, 0, 0, 0, 0, 0, 0, 0]
 pack = None
 server_socket = None
 config = ctrl.ConfigManager("config.json")
@@ -86,10 +86,10 @@ async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_ser
         try:
             # 等待管道中有数据可读
             msg = await asyncio.to_thread(conn.recv)
-            new_message = [0, 0, 0, 1, 0, 0, 0, 0]
+            new_message = [0, 0, 0, 0, 0, 0, 0, 0]
             if msg[0] == 0: # 0开头为正常数据更新
-                new_message[1] = msg[1]
-                new_message[2] = msg[2]
+                for i in range(8):
+                    new_message[i] = msg[i + 1]
                 update_message_manual(new_message)
                 send_ready_network.set()  # 设置事件，表示有新消息可发送
                 send_ready_serial.set()  # 设置事件，表示有新消息可发送
@@ -125,7 +125,8 @@ async def Send_Serial(pack, send_ready: asyncio.Event):
         try:
             await send_ready.wait()
             if pack is not None:
-                pack.insert_byte(0x08)  # 包头
+                pack.insert_byte(0x09)  # 包头
+                pack.insert_three_bytes(pack.num_to_bytes(0))
                 for i in range(len(message)):
                     pack.insert_three_bytes(pack.num_to_bytes(message[i]))
                 pack.send_packet()
