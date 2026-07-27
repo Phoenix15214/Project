@@ -15,12 +15,13 @@ CAMERA_WIDTH = 1280 # 1080p 1920*1080
 CAMERA_HEIGHT = 720 # 1080p 1920*1080
 FRAME_CENTER_X = CAMERA_WIDTH // 2
 FRAME_CENTER_Y = CAMERA_HEIGHT // 2
-TARGET_X, TARGET_Y = 640, 560
+TARGET_X, TARGET_Y = 640, 650
 AVG_SLOPE_FILTER_THRESHOLD = 1
 white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
 frame_share = ctrl.MemoryShare(name='shared_frame', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
 frame_share2 = ctrl.MemoryShare(name='shared_frame2', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
 mode = "destination"
+line_state = "plus"
 
 # 打开摄像头
 def open_camera(camera_index=0):
@@ -44,18 +45,23 @@ def open_camera(camera_index=0):
 # 预处理图像，返回纯白色图像
 def preprocess_frame(frame):
     img_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    white_mask = cv2.inRange(img_hsv, (0, 0, 220), (180, 50, 255))
+    white_frame = cv2.bitwise_and(white, white, mask=white_mask)
+    # frame = cv2.bitwise_and(frame, frame, mask=white_mask)
+    # img_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     red_mask1 = cv2.inRange(img_hsv, (0, 25, 50), (15, 255, 255))
     red_mask2 = cv2.inRange(img_hsv, (165, 25, 50), (180, 255, 255))
     red_frame = cv2.bitwise_and(white, white, mask=cv2.bitwise_or(red_mask1, red_mask2))
-    pink_mask = cv2.inRange(img_hsv, (130, 20, 100), (180, 150, 255))
+    pink_mask = cv2.inRange(img_hsv, (130, 40, 100), (180, 55, 255))
     img_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     pink_frame = cv2.bitwise_and(white, white, mask=pink_mask)
+    
 
-    return red_frame, pink_frame, img_gray
+    return red_frame, pink_frame, img_gray, white_frame
 
 def preprocess_frame2(frame):
     img_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    pink_mask = cv2.inRange(img_hsv, (130, 20, 100), (180, 150, 255))
+    pink_mask = cv2.inRange(img_hsv, (130, 30, 100), (180, 140, 255))
     pink_frame = cv2.bitwise_and(white, white, mask=pink_mask)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -312,87 +318,6 @@ def draw_smooth_path_on_grid(
 
     return img
 
-def hl(image):
-
-    # 取ROI
-    height, width = image.shape
-    # 边缘检测与霍夫直线检测
-    edges = cv2.Canny(image, 50, 150)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=50, minLineLength=30, maxLineGap=10)
-
-    # 用于存储所有有效线段的参数 (x1, y1, x2, y2, slope)
-    valid_lines = []
-    # 创建输出图片
-    output_image = image.copy()
-
-    # 遍历所有直线
-    if lines is not None:
-        for line in lines:
-            x1, y1, x2, y2 = line
-            # 绘制所有直线
-            cv2.line(output_image, (x2, y2), (x1, y1), (255, 0, 255), 4)
-            # 计算线段的斜率,垂直直线给一个大值
-            if x2 != x1:
-                slope = (y2 - y1) / (x2 - x1)
-            else:
-                slope = 999.0
-            # 计算线段长度,过滤掉过短的线段
-            length = np.hypot(x2 - x1, y2 - y1)
-            if length < 30:
-                continue
-            # 存储有效线段
-            valid_lines.append((x1, y1, x2, y2, slope, length))
-
-    if valid_lines:
-        # 过滤过小斜率
-        filtered_lines = [l for l in valid_lines if abs(l[4]) >= AVG_SLOPE_FILTER_THRESHOLD]
-        if not filtered_lines:
-            filtered_lines = valid_lines
-
-        # 计算平均斜率与中心线在ROI底部的x坐标
-        avg_slope = np.mean([l[4] for l in filtered_lines])
-        all_x = [l[0] for l in filtered_lines] + [l[2] for l in filtered_lines]
-        all_y = [l[1] for l in filtered_lines] + [l[3] for l in filtered_lines]
-        p_start_x = int(np.mean(all_x))
-        p_start_y = int(np.mean(all_y))
-
-        # 计算中心线在ROI顶部的X坐标,斜率很小时认为delta_x = 0
-        delta_y = height
-        if abs(avg_slope) < 0.001:
-            delta_x = 0
-        else:
-            delta_x = int(delta_y / avg_slope)
-        p_end_x = p_start_x - delta_x
-
-        # 使用p_start_x计算中心偏移
-        offset_x = p_start_x - (width // 2)
-        offset_y = p_start_y - (height // 2)
-
-        # 计算角度
-        center_angle_rad = math.atan(avg_slope)
-        angle_horiz = math.degrees(center_angle_rad)
-
-        # 转换为与垂直方向的夹角 (垂直向前为 0 度。左转为负，右转为正)
-        # 确保斜率接近垂直时角度接近 0
-        if abs(avg_slope) > 999:
-            center_angle = 0.0
-        else:
-            center_angle = 90 - angle_horiz if angle_horiz > 0 else -90 - angle_horiz
-
-        # 绘制中心线及其他可视化
-        cv2.line(output_image, (p_start_x, height), (p_end_x, 0), (0, 255, 255), 4)
-        cv2.putText(output_image, f'Angle: {center_angle:.2f} degrees', (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-        cv2.putText(output_image, f'Avg X: {offset_x}', (10, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-        
-    else:
-        # 未检测到有效轨道
-        offset_x = 0
-        offset_y = 0
-        center_angle = 0.0
-
-    return offset_x, offset_y, center_angle, output_image
 
 def find_contours(white_frame, min_area=None, max_area=None):
     # 查找轮廓
@@ -437,11 +362,9 @@ def get_grab_state(target_center, pink_center, distance_threshold=100):
     return distance < distance_threshold
 
 def get_closest_center(centers, target_center):
-    if not centers or target_center is None:
+    if centers is None or len(centers) == 0 or target_center is None:
         return None
-    if len(centers) == 0:
-        return None
-
+    
     closest_center = min(centers, key=lambda c: np.linalg.norm(np.array(c) - np.array(target_center)))
     return closest_center
 
@@ -451,8 +374,14 @@ def find_lines_via_hough(black_frame, min_line_length=30, max_line_gap=10):
 
     return lines
 
+def find_lines_via_lsd(black_frame):
+    lsd = cv2.createLineSegmentDetector(0)
+    lines, widths, prec, nfa = lsd.detect(black_frame)
+    # lines 格式为 [x1, y1, x2, y2]（浮点）
+    return lines.astype(np.int32) if lines is not None else None
+
 def get_intersections(lines):
-    lengthen = 150
+    lengthen = 50
     intersections = []
     if lines is None:
         return intersections
@@ -480,10 +409,10 @@ def get_intersections(lines):
 
 def find_dense_clusters(points, center_x, width, eps, min_samples=3):
     if points is None or len(points) == 0:
-        return np.empty((0, 2))
+        return []
     points = np.asarray(points)
     if points.ndim != 2 or points.shape[1] != 2:
-        return np.empty((0, 2))
+        return []
     # ---------- 1. 按 x 筛选（向量化） ----------
     x_min = center_x - width / 2.0
     x_max = center_x + width / 2.0
@@ -491,7 +420,7 @@ def find_dense_clusters(points, center_x, width, eps, min_samples=3):
     filtered = points[mask]
 
     if len(filtered) < min_samples:
-        return np.empty((0, 2))
+        return []
 
     # ---------- 2. 密度聚类（DBSCAN） ----------
     clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(filtered)
@@ -509,6 +438,108 @@ def find_dense_clusters(points, center_x, width, eps, min_samples=3):
 
     return centers
 
+def check_original_area(valid_intersections, last_destination, closest_destination, roi_size=50):
+    if valid_intersections is None or last_destination is None or closest_destination is None:
+        return None
+    for intersection in valid_intersections:
+        if (last_destination[0] - roi_size <= intersection[0] <= last_destination[0] + roi_size and
+            last_destination[1] - roi_size <= intersection[1] <= last_destination[1] + roi_size):
+            return intersection
+    return closest_destination
+
+def distinguish_thick_lines(binary):
+    white_count1 = cv2.countNonZero(binary[CAMERA_HEIGHT//2, :]) # 中间行的白色像素数量
+    white_count2 = cv2.countNonZero(binary[CAMERA_HEIGHT//4, :]) # 上四分之一行的白色像素数量
+    if white_count1 > 15 or white_count2 > 15:
+        return True
+    return False
+
+# 霍夫直线检测巡线
+def hl(image):
+    global line_state
+    isthick_line = distinguish_thick_lines(image)
+    closest_center = None
+    # 取ROI
+    height, width = image.shape
+    # 边缘检测与霍夫直线检测
+    edges = cv2.Canny(image, 50, 150)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=50, minLineLength=30, maxLineGap=10)
+
+    # 用于存储所有有效线段的参数 (x1, y1, x2, y2, slope)
+    valid_lines = []
+
+    # 遍历所有直线
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line
+            # 计算线段的斜率,垂直直线给一个大值
+            if x2 != x1:
+                slope = (y2 - y1) / (x2 - x1)
+            else:
+                slope = 999.0
+            # 计算线段长度,过滤掉过短的线段
+            length = np.hypot(x2 - x1, y2 - y1)
+            if length < 30:
+                continue
+            # 存储有效线段
+            valid_lines.append((x1, y1, x2, y2, slope, length))
+
+    if valid_lines is not None and len(valid_lines) > 0 and isthick_line:
+        intersections = get_intersections([(x1, y1, x2, y2) for x1, y1, x2, y2, _, _ in valid_lines])
+        dense_centers = find_dense_clusters(intersections, width // 2, width, eps=30, min_samples=3) if intersections is not None else None
+        closest_center = get_closest_center(dense_centers, (width // 2, height // 2)) if dense_centers is not None else None
+        # 过滤过小斜率
+        filtered_lines = [l for l in valid_lines if abs(l[4]) >= AVG_SLOPE_FILTER_THRESHOLD]
+        if not filtered_lines:
+            filtered_lines = valid_lines
+
+        # 计算平均斜率与中心线在ROI底部的x坐标
+        avg_slope = np.mean([l[4] for l in filtered_lines])
+        all_x = [l[0] for l in filtered_lines] + [l[2] for l in filtered_lines]
+        all_y = [l[1] for l in filtered_lines] + [l[3] for l in filtered_lines]
+        p_start_x = int(np.mean(all_x))
+        p_start_y = int(np.mean(all_y))
+
+        # 计算中心线在ROI顶部的X坐标,斜率很小时认为delta_x = 0
+        delta_y = height
+        if abs(avg_slope) < 0.001:
+            delta_x = 0
+        else:
+            delta_x = int(delta_y / avg_slope)
+        p_end_x = p_start_x - delta_x
+
+        # 使用p_start_x计算中心偏移
+        offset_x = p_start_x - (width // 2)
+        offset_y = p_start_y - (height // 2)
+
+        # 计算角度
+        center_angle_rad = math.atan(avg_slope)
+        angle_horiz = math.degrees(center_angle_rad)
+
+        # 转换为与垂直方向的夹角 (垂直向前为 0 度。左转为负，右转为正)
+        # 确保斜率接近垂直时角度接近 0
+        if abs(avg_slope) > 999:
+            center_angle = 0.0
+        else:
+            center_angle = 90 - angle_horiz if angle_horiz > 0 else -90 - angle_horiz
+        # 从不同方向接近线的时候有不同的偏置
+        if center_angle > 20:
+            line_state = "plus"
+        elif center_angle < -20:
+            line_state = "minus"
+        if line_state == "plus":
+            offset_x -= 500
+        else:
+            offset_x += 500
+    else:
+        # 未检测到有效轨道
+        offset_x = 0
+        offset_y = -300
+        center_angle = 0.0
+        closest_center = None
+
+    return offset_x, offset_y, center_angle, closest_center
+
 def handle_pipe(conn):
     global mode
     if conn is None:
@@ -519,9 +550,15 @@ def handle_pipe(conn):
         if command == "mode":
             mode = "object" if value == 0 else "destination"
             print(f"Mode changed to: {mode}")
+        elif command == "Find_Home":
+            mode = "destination"
+        elif command == "Find_Object":
+            mode = "object"
 
 def main(conn=None, frame_ready1=None, frame_ready2=None):
     global mode
+    destination_count = 0
+    start_time = time.time()
     # 显示FPS
     last_time = time.time()
     current_time = time.time()
@@ -593,69 +630,78 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
             # 处理1号摄像头图像
             if not frame_not_ready1:
                 # 预处理
-                red_frame, pink_frame, gray= preprocess_frame(frame)
+                red_frame, pink_frame, gray, white_frame = preprocess_frame(frame)
                 # 对预处理得到的图进行后处理
                 gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
                 # gray = lb.Sigmoid_Curve_Transform_LUT(gray, k=15.0, threshold=150)
                 # gray = lb.Adaptive_Sigmoid_Transform(gray, grid_size=(8, 8), k_base=10.0, k_range=(5.0, 15.0))
                 # gray = lb.Adaptive_Sigmoid_Transform_UMat(gray, grid_size=(8, 8), k_base=15.0, k_range=(10.0, 35.0))
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)[1]
+                binary = cv2.threshold(gray, 170, 255, cv2.THRESH_BINARY_INV)[1]
                 binary = cv2.erode(binary, kernel, iterations=1)
                 binary = cv2.dilate(binary, kernel, iterations=2)
-                pink_frame = cv2.erode(pink_frame, kernel, iterations=1)
+                # pink_frame = cv2.erode(pink_frame, kernel, iterations=1)
                 pink_frame = cv2.dilate(pink_frame, kernel, iterations=3)
 
-                # 霍夫直线检测
-                lines = find_lines_via_hough(binary, min_line_length=50, max_line_gap=20)
-                # 通过直线的交点找终点
-                if lines is not None:
-                    # for line in lines:
-                    #     x1, y1, x2, y2 = line
-                    #     cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 255), 4)
-                    intersections = get_intersections(lines)
-                    valid_intersections = find_dense_clusters(intersections, center_x=FRAME_CENTER_X, width=300, eps=50, min_samples=3)
-                    if len(valid_intersections) > 0:
-                        closest_destination = get_closest_center(valid_intersections, (FRAME_CENTER_X, FRAME_CENTER_Y))
-                        if closest_destination is not None:
-                            cv2.circle(frame, (int(closest_destination[0]), int(closest_destination[1])), 10, (0, 255, 0), -1)
-                            # 更新终点坐标
-                            destination_coordination[0] = int(closest_destination[0])
-                            destination_coordination[1] = int(closest_destination[1])
-                            destination_coordination[2] = 1  # 表示没有丢点
-                            distance = np.linalg.norm(np.array(destination_coordination[:2]) - np.array([TARGET_X, TARGET_Y]))
-                            if distance < 75:
-                                send_message[8] = 1  # 表示终点接近目标点
-                                print("Destination is close to the target point.")
-                            if last_destination[2] > CAMERA_HEIGHT and destination_coordination[2] == 0:
-                                send_message[8] = 1 # 表示终点从下端出画
-                                print("Destination is out of the screen from the bottom.")
-                            last_destination = destination_coordination.copy()
+                # # 霍夫直线检测
+                # lines = find_lines_via_hough(binary, min_line_length=50, max_line_gap=20)
+                # # lines = find_lines_via_lsd(binary)
+                # # 通过直线的交点找终点
+                # if lines is not None:
+                #     # for line in lines:
+                #     #     x1, y1, x2, y2 = line
+                #     #     cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 255), 4)
+                #     intersections = get_intersections(lines)
+                #     # for intersection in intersections:
+                #     #     cv2.circle(frame, (int(intersection[0]), int(intersection[1])), 5, (0, 255, 255), -1)
+                #     valid_intersections = find_dense_clusters(intersections, center_x=FRAME_CENTER_X, width=600, eps=50, min_samples=3)
+                #     # for valid_intersection in valid_intersections:
+                #     #     cv2.circle(frame, (int(valid_intersection[0]), int(valid_intersection[1])), 5, (0, 255, 0), -1)
+                #     if len(valid_intersections) > 0:
+                #         start_time = time.time()
+                #         closest_destination = get_closest_center(valid_intersections, (FRAME_CENTER_X, FRAME_CENTER_Y))
+                #         distance = np.linalg.norm(np.array(closest_destination) - np.array([last_destination[0], last_destination[1]])) if closest_destination is not None else 0
+                #         if distance > 100:
+                #             # print("Destination point jumped too far, checking original area.")
+                #             closest_destination = check_original_area(valid_intersections, last_destination, closest_destination, 50)
+                #         if closest_destination is not None:
+                #             cv2.circle(frame, (int(closest_destination[0]), int(closest_destination[1])), 10, (0, 255, 0), -1)
+                #             # 更新终点坐标
+                #             destination_coordination[0] = int(closest_destination[0])
+                #             destination_coordination[1] = int(closest_destination[1])
+                #             destination_coordination[2] = 1  # 表示没有丢点
+                #             distance = np.linalg.norm(np.array(destination_coordination[:2]) - np.array([TARGET_X, TARGET_Y]))
+                #             if distance < 75:
+                #                 send_message[8] = 1  # 表示终点接近目标点
+                #                 print("Destination is close to the target point.")
+                #             if last_destination[2] > CAMERA_HEIGHT and destination_coordination[2] == 0:
+                #                 send_message[8] = 1 # 表示终点从下端出画
+                #                 print("Destination is out of the screen from the bottom.")
+                #             last_destination = destination_coordination.copy()
 
                     # for center in valid_intersections:
                     #     cv2.circle(frame, (int(center[0]), int(center[1])), 5, (0, 0, 255), -1)
-                
-                # 找出可以通行的网格
-                passable_grid = get_passable_grid(binary, grid_count=10)
-                start = (8, 5)  # 起点坐标 (row, col)
-                goal = (0, 9)  # 终点坐标 (row, col)
-                astar = AStar(passable_grid)
-                path = astar.find_path(start, goal)
-                path_frame = frame.copy()
-                # 绘制平滑路径
-                path_frame = draw_smooth_path_on_grid(passable_grid, path, start, goal, cell_size=20, smooth_points=400, show_raw=True)
+                # # 找出可以通行的网格
+                # passable_grid = get_passable_grid(binary, grid_count=10)
+                # start = (8, 5)  # 起点坐标 (row, col)
+                # goal = (0, 9)  # 终点坐标 (row, col)
+                # astar = AStar(passable_grid)
+                # path = astar.find_path(start, goal)
+                # path_frame = frame.copy()
+                # # 绘制平滑路径
+                # path_frame = draw_smooth_path_on_grid(passable_grid, path, start, goal, cell_size=20, smooth_points=400, show_raw=True)
                 # 寻找目标（粉色纸片）
-                centers = find_object(pink_frame, min_area=2000, max_area=None)
+                centers = find_object(pink_frame, min_area=200, max_area=None)
                 closest_center = get_closest_center(centers, (TARGET_X, TARGET_Y))
                 offsetx, offsety = 0, 0
                 if closest_center is not None:
                     offsetx = closest_center[0] - TARGET_X
-                    offsety = closest_center[1] - TARGET_Y
+                    offsety = closest_center[1] - 800 # TARGET_Y给个负值，让目标出画
                 else:
                     offsetx = 0
                     offsety = 0
-                offsetx += 1000
-                offsety += 1000
+                offsetx += 2000
+                offsety += 2000
                 # 更新发送消息
                 object_coordination[0] = offsetx
                 object_coordination[1] = offsety
@@ -667,13 +713,13 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
                         cv2.putText(frame, f"({center[0]}, {center[1]})", (center[0] + 10, center[1] - 10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-                if path is not None:
-                    for (row, col) in path:
-                        grid_height = binary.shape[0] // 10
-                        grid_width = binary.shape[1] // 10
-                        center_x = col * grid_width + grid_width // 2
-                        center_y = row * grid_height + grid_height // 2
-                        cv2.circle(frame, (center_x, center_y), 5, (255, 0, 0), -1)
+                # if path is not None:
+                #     for (row, col) in path:
+                #         grid_height = binary.shape[0] // 10
+                #         grid_width = binary.shape[1] // 10
+                #         center_x = col * grid_width + grid_width // 2
+                #         center_y = row * grid_height + grid_height // 2
+                #         cv2.circle(frame, (center_x, center_y), 5, (255, 0, 0), -1)
 
             # 处理2号摄像头图像
             if not frame_not_ready2 and frame2 is not None:
@@ -682,24 +728,28 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
                 pink_frame2 = cv2.erode(pink_frame2, kernel, iterations=1)
                 pink_frame2 = cv2.dilate(pink_frame2, kernel, iterations=3)
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                binary2 = cv2.threshold(gray2, 150, 255, cv2.THRESH_BINARY_INV)[1]
-                binary2 = cv2.erode(binary2, kernel, iterations=1)
-                binary2 = cv2.dilate(binary2, kernel, iterations=2)
-                centers = find_object(pink_frame2, min_area=2000, max_area=None)
+                gray2 = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray2)
+                binary2 = cv2.threshold(gray2, 100, 255, cv2.THRESH_BINARY_INV)[1]
+                binary2 = cv2.erode(binary2, kernel, iterations=5)
+                binary2 = cv2.dilate(binary2, kernel, iterations=3)
+                # binary2 = cv2.morphologyEx(binary2, cv2.MORPH_OPEN, kernel, iterations=5)
+                centers = find_object(pink_frame2, min_area=200, max_area=None)
                 closest_center = get_closest_center(centers, (TARGET_X, TARGET_Y))
                 offsetx, offsety = 0, 0
+                # 处理物体坐标
                 if closest_center is not None:
                     offsetx = closest_center[0] - TARGET_X
                     offsety = closest_center[1] - TARGET_Y
                 else:
                     offsetx = 0
                     offsety = 0
-                offsetx += 1000
-                offsety += 1000
+                offsetx += 2000
+                offsety += 2000
                 # 更新发送消息(若下端摄像头有目标，则覆盖上端摄像头的目标)
-                object_coordination[0] = offsetx
-                object_coordination[1] = offsety
-                object_coordination[2] = len(centers) if centers is not None else 0
+                if centers is not None and len(centers) > 0:
+                    object_coordination[0] = offsetx
+                    object_coordination[1] = offsety
+                    object_coordination[2] = len(centers)
 
                 if centers is not None:
                     for center in centers:
@@ -708,21 +758,34 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                 
                 # 霍夫直线检测
-                # if destination_coordination[2] == 0:  # 如果上端摄像头丢点，则使用下端摄像头的终点
-                #     lines = find_lines_via_hough(binary2, min_line_length=30, max_line_gap=10)
-                #     # 通过直线的交点找终点
-                #     if lines is not None:
-                #         intersections = get_intersections(lines)
-                #         valid_intersections = find_dense_clusters(intersections, center_x=FRAME_CENTER_X, width=300, eps=50, min_samples=3)
-                #         if len(valid_intersections) > 0:
-                #             closest_destination = get_closest_center(valid_intersections, (FRAME_CENTER_X, FRAME_CENTER_Y))
-                #             if closest_destination is not None:
-                #                 cv2.circle(frame, (int(closest_destination[0]), int(closest_destination[1])), 10, (0, 255, 0), -1)
-                #                 # 更新终点坐标
-                #                 destination_coordination[0] = int(closest_destination[0])
-                #                 destination_coordination[1] = int(closest_destination[1])
-                #                 destination_coordination[2] = 1  # 表示没有丢点
+                binary2[CAMERA_HEIGHT - 300:CAMERA_HEIGHT, FRAME_CENTER_X - 350:FRAME_CENTER_X + 350] = 0
 
+                offset_x, offset_y, center_angle, closest_center = hl(binary2)
+                if closest_center is None:
+                    destination_coordination[0] = int(offset_x) + 2000
+                    destination_coordination[1] = int(offset_y) + 2000
+                    destination_coordination[2] = 0 # 表示没有终点
+                    cv2.circle(frame2, (offset_x + FRAME_CENTER_X, offset_y + FRAME_CENTER_Y), 10, (0, 255, 0), -1)
+                    destination_count = 0 # 重置计数器
+                else:
+                    if destination_count < 2:
+                        destination_count += 1
+                        destination_coordination[0] = int(offset_x) + 2000
+                        destination_coordination[1] = int(offset_y) + 2000
+                        destination_coordination[2] = 0 # 表示没有终点
+                        cv2.circle(frame2, (offset_x + FRAME_CENTER_X, offset_y + FRAME_CENTER_Y), 10, (0, 255, 0), -1)
+                        print("Destination detected, not archived")
+                    else:
+                        destination_coordination[0] = int(closest_center[0]) - TARGET_X + 2000
+                        destination_coordination[1] = int(closest_center[1]) - TARGET_Y + 2000
+                        destination_coordination[2] = 1
+                        print("Destination detected")
+                    cv2.circle(frame2, (int(closest_center[0]), int(closest_center[1])), 10, (0, 255, 0), -1)
+                    # 计算终点距离
+                    distance = np.linalg.norm(np.array(destination_coordination[:2]) - np.array([TARGET_X, TARGET_Y]))
+                    if distance < 50:
+                        send_message[8] = 1  # 表示终点接近目标点
+                        print("Destination is close to the target point.")
             if conn is not None:
                 handle_pipe(conn)
                 if mode == "object":
@@ -736,18 +799,22 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
                 conn.send(send_message)
             # 显示图像
             # if not frame_not_ready1:
+            #     # white_frame = cv2.resize(white_frame, (640, 360))
             #     frame = cv2.resize(frame, (640, 360))
-            #     gray = cv2.resize(gray, (640, 360))
-            #     binary = cv2.resize(binary, (640, 360))
-            #     # pink_frame = cv2.resize(pink_frame, (640, 360))
+            #     # gray = cv2.resize(gray, (640, 360))
+            #     # binary = cv2.resize(binary, (640, 360))
+            #     pink_frame = cv2.resize(pink_frame, (640, 360))
             #     # path_frame = cv2.resize(path_frame, (640, 360))
             #     cv2.imshow('Original Frame', frame)
-            #     cv2.imshow('Gray Frame', gray)
-            #     cv2.imshow("Binary", binary)
-            #     # cv2.imshow("Pink Frame", pink_frame)
+            #     # cv2.imshow('White Frame', white_frame)
+            #     # cv2.imshow('Gray Frame', gray)
+            #     # cv2.imshow("Binary", binary)
+            #     cv2.imshow("Pink Frame", pink_frame)
             #     # cv2.imshow("Path Frame", path_frame)
             # if not frame_not_ready2:
             #     frame2 = cv2.resize(frame2, (640, 360))
+            #     binary2 = cv2.resize(binary2, (640, 360))
+            #     cv2.imshow('Binary Frame 2', binary2)
             #     cv2.imshow('Camera 2 Frame', frame2)
             # if cv2.waitKey(1) & 0xFF == ord('q'):
             #     break

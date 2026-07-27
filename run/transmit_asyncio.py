@@ -169,7 +169,7 @@ async def Recv_Network(require_refresh: asyncio.Event, Connected: asyncio.Event)
         Connected.clear()
     Connected.clear()
 
-async def Recv_Serial(pack, require_refresh: asyncio.Event):
+async def Recv_Serial(conn, pack, require_refresh: asyncio.Event):
     global config
     global config_data
     while pack is not None:
@@ -187,6 +187,14 @@ async def Recv_Serial(pack, require_refresh: asyncio.Event):
                 for val in config_data.values():
                     pack.insert_three_bytes(pack.num_to_bytes(int(val)))
                 pack.send_packet()
+            elif command == "Find_Home":
+                send_message = "@Find_Home:1$#"
+                if conn is not None:
+                    conn.send(send_message)
+            elif command == "Find_Item":
+                send_message = "@Find_Object:1$#"
+                if conn is not None:
+                    conn.send(send_message)
             else:
                 original_value = config_data.get(command, None)
                 if original_value is not None:
@@ -229,7 +237,7 @@ async def main_task(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloa
         asyncio.create_task(Send_Network(method, send_ready_network)), # 发送消息到网络
         asyncio.create_task(Send_Serial(pack, send_ready_serial)), # 发送消息到串口
         asyncio.create_task(Recv_Network(require_refresh, Connected)), # 从网络接收配置更新
-        asyncio.create_task(Recv_Serial(pack, require_refresh)), # 从串口接收配置更新
+        asyncio.create_task(Recv_Serial(conn, pack, require_refresh)), # 从串口接收配置更新
         asyncio.create_task(Update_Config(require_refresh)), # 更新配置
         asyncio.create_task(Listen_Accept(connect_socket, Connected)), # 监听并接受网络连接
         asyncio.create_task(Tik_Tok(send_ready_network, send_ready_serial, 0.05)), # 定时触发发送

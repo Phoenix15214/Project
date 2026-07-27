@@ -14,15 +14,15 @@ FRAME_CENTER_Y = CAMERA_HEIGHT // 2
 frame_share = ctrl.MemoryShare(name='shared_frame', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
 frame_share2 = ctrl.MemoryShare(name='shared_frame2', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
 
-def open_camera(camera_index=0):
+def open_camera(camera_index=0, auto_exposure=1, exposure_value=30):
     try:
         cap = cv2.VideoCapture(camera_index)
         cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-        cap.set(cv2.CAP_PROP_EXPOSURE, 30)
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, auto_exposure)
+        cap.set(cv2.CAP_PROP_EXPOSURE, exposure_value)
         actual_auto_exp = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
         actual_exp = cap.get(cv2.CAP_PROP_EXPOSURE)
         print(f"Camera settings: Auto Exposure={actual_auto_exp}, Exposure={actual_exp}")
@@ -56,7 +56,7 @@ def video_capture_1(frame_ready: Value):
         frame_share.close()
 
 def video_capture_2(frame_ready: Value):
-    cap2 = open_camera(2)
+    cap2 = open_camera(2, auto_exposure=1, exposure_value=60)
     if cap2 is None:
         print("Camera 2 could not be opened. Exiting.")
         return
