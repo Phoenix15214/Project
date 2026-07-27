@@ -97,6 +97,11 @@ async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_ser
                 send_message = msg[1]
                 if pack is not None:
                     pack.send_char(send_message)
+            elif msg[0] == 2: # 2开头为检测结果
+                boxes = msg[1]
+                scores = msg[2]
+                class_ids = msg[3]
+                print(f"Received detection results: Boxes={boxes}, Scores={scores}, Class IDs={class_ids}")
         except EOFError:
             break
 
@@ -188,11 +193,11 @@ async def Recv_Serial(conn, pack, require_refresh: asyncio.Event):
                     pack.insert_three_bytes(pack.num_to_bytes(int(val)))
                 pack.send_packet()
             elif command == "Find_Home":
-                send_message = "@Find_Home:1$#"
+                send_message = "@mode:1$#"
                 if conn is not None:
                     conn.send(send_message)
             elif command == "Find_Item":
-                send_message = "@Find_Object:1$#"
+                send_message = "@mode:0$#"
                 if conn is not None:
                     conn.send(send_message)
             else:

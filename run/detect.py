@@ -22,6 +22,7 @@ frame_share = ctrl.MemoryShare(name='shared_frame', shape=(CAMERA_HEIGHT,CAMERA_
 frame_share2 = ctrl.MemoryShare(name='shared_frame2', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
 mode = "destination"
 line_state = "plus"
+steel_ball_centers = []
 
 # 打开摄像头
 def open_camera(camera_index=0):
@@ -542,21 +543,21 @@ def hl(image):
 
 def handle_pipe(conn):
     global mode
+    global steel_ball_centers
     if conn is None:
         return
     if conn.poll():
         msg = conn.recv()
+        if msg[0] == 2: # 2开头为检测结果
+            steel_ball_centers = msg[1]
         command, value = ctrl.Parse_Input(msg)
         if command == "mode":
-            mode = "object" if value == 0 else "destination"
+            mode = "object" if value == "0" else "destination"
             print(f"Mode changed to: {mode}")
-        elif command == "Find_Home":
-            mode = "destination"
-        elif command == "Find_Object":
-            mode = "object"
-
+        
 def main(conn=None, frame_ready1=None, frame_ready2=None):
     global mode
+    global steel_ball_centers
     destination_count = 0
     start_time = time.time()
     # 显示FPS
@@ -786,6 +787,7 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
                     if distance < 50:
                         send_message[8] = 1  # 表示终点接近目标点
                         print("Destination is close to the target point.")
+            # 发送消息
             if conn is not None:
                 handle_pipe(conn)
                 if mode == "object":
@@ -795,6 +797,18 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
                 elif mode == "destination":
                     send_message[1] = destination_coordination[0]
                     send_message[2] = destination_coordination[1]
+                elif mode == "ball":
+                    closest_ball = get_closest_center(steel_ball_centers, (TARGET_X, TARGET_Y))
+                    if closest_ball is not None:
+                        offsetx = closest_ball[0] - TARGET_X
+                        offsety = closest_ball[1] - TARGET_Y
+                    else:
+                        offsetx = 0
+                        offsety = 0
+                    offsetx += 2000
+                    offsety += 2000
+                    send_message[1] = offsetx
+                    send_message[2] = offsety
                 send_message[7] = destination_coordination[2]  # 终点是否丢点
                 conn.send(send_message)
             # 显示图像
@@ -833,8 +847,8 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
     finally:
         cap.release() if cap is not None else None
         cv2.destroyAllWindows()
-        frame_share.close() if frame_share is not None else None
-        frame_share2.close() if frame_share2 is not None else None
+        frame_share.unlink() if frame_share is not None else None
+        frame_share2.unlink() if frame_share2 is not None else None
 
 if __name__ == "__main__":
     main()

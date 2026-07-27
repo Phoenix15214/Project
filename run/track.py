@@ -53,7 +53,7 @@ def video_capture_1(frame_ready: Value):
 
     finally:
         cap.release()
-        frame_share.close()
+        frame_share.unlink()
 
 def video_capture_2(frame_ready: Value):
     cap2 = open_camera(2, auto_exposure=1, exposure_value=60)
@@ -76,7 +76,7 @@ def video_capture_2(frame_ready: Value):
 
     finally:
         cap2.release()
-        frame_share2.close()
+        frame_share2.unlink()
 
 def main(frame_ready1: Value, frame_ready2: Value):
     try:
