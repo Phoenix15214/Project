@@ -49,7 +49,7 @@ def find_contours(white_frame, min_area=None, max_area=None):
     return valid_contours
 
 
-def main(conn=None):
+def main(conn=None, stop_event=None):
     # 显示FPS
     last_time = time.time()
     current_time = time.time()
@@ -58,20 +58,23 @@ def main(conn=None):
     # 打开摄像头
     cap = open_camera()
     if cap is None:
-        return
+        raise RuntimeError("Failed to open camera")
     ret, frame = cap.read()
     if not ret:
-        print("Failed to grab initial frame")
         cap.release()
-        return
+        raise RuntimeError("Failed to grab initial frame")
     try:
-        while True:
+        while stop_event is None or not stop_event.is_set():
             # 获取图像
-            _, frame = cap.read()
+            ret, frame = cap.read()
+            if not ret:
+                raise RuntimeError("Failed to grab frame")
 
             frame = cv2.resize(frame, (640, 480))
             cv2.imshow("Camera Feed", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
+                if stop_event is not None:
+                    stop_event.set()
                 break
             frame_count += 1
             current_time = time.time()
@@ -85,6 +88,9 @@ def main(conn=None):
         print("Interrupted by user")
     except Exception as e:
         print(f"An error occurred: {e}")
+        if stop_event is not None:
+            stop_event.set()
+        raise
     finally:
         cap.release()
         cv2.destroyAllWindows()

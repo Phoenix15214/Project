@@ -221,7 +221,17 @@ async def Tik_Tok(send_ready_network: asyncio.Event, send_ready_serial: asyncio.
         send_ready_network.set()
         send_ready_serial.set()
 
-async def main_task(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"):
+async def _wait_stop_event(stop_event):
+    if stop_event is None:
+        return
+    await asyncio.to_thread(stop_event.wait)
+
+
+async def _run_workers(tasks):
+    await asyncio.gather(*tasks)
+
+
+async def main_task(conn, stop_event=None, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"):
     global pack
     global server_socket
     global message
@@ -251,11 +261,48 @@ async def main_task(conn, port="/dev/ttyUSB0", baudrate=115200, method="justfloa
         asyncio.create_task(Tik_Tok(send_ready_network, send_ready_serial, 0.05)), # 定时触发发送
     ]
 
-    # 等待所有任务完成
-    await asyncio.gather(*tasks)
+    try:
+        if stop_event is None:
+            await asyncio.gather(*tasks)
+        else:
+            stop_wait_task = asyncio.create_task(_wait_stop_event(stop_event))
+            workers_task = asyncio.create_task(_run_workers(tasks))
+            done, pending = await asyncio.wait(
+                {stop_wait_task, workers_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
-def main(conn=None, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"):
-    asyncio.run(main_task(conn, port, baudrate, method))
+            if workers_task in done:
+                await workers_task
+            else:
+                stop_event.set()
+
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if server_socket is not None:
+            try:
+                server_socket.close()
+            except Exception:
+                pass
+            server_socket = None
+        connect_socket.close()
+
+def main(conn=None, stop_event=None, port="/dev/ttyUSB0", baudrate=115200, method="justfloat"):
+    try:
+        asyncio.run(main_task(conn, stop_event, port, baudrate, method))
+    except KeyboardInterrupt:
+        if stop_event is not None:
+            stop_event.set()
+        raise
+    except Exception:
+        if stop_event is not None:
+            stop_event.set()
+        raise
 
 if __name__ == "__main__":
     try:
