@@ -10,6 +10,9 @@ from transmit_asyncio import main as transmit_main
 from track import main as track_main
 from steel_ball_detection import main as steel_ball_detection_main
 
+CAMERA_WIDTH = 1280 # 1080p 1920*1080
+CAMERA_HEIGHT = 720 # 1080p 1920*1080
+
 pipe1, pipe2 = Pipe()
 frame_share = ctrl.MemoryShare(name='shared_frame', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
 frame_share2 = ctrl.MemoryShare(name='shared_frame2', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
@@ -21,7 +24,7 @@ def main():
         p1 = Process(target=detect_main, args=(pipe1, frame_ready1, frame_ready2))
         p2 = Process(target=transmit_main, args=(pipe2,))
         p3 = Process(target=track_main, args=(frame_ready1, frame_ready2))
-        p4 = Process(target=steel_ball_detection_main, args=(pipe2, frame_ready2))
+        p4 = Process(target=steel_ball_detection_main, args=(pipe2,))
 
         p3.start()
         p2.start()

@@ -56,7 +56,7 @@ def video_capture_1(frame_ready: Value):
         frame_share.unlink()
 
 def video_capture_2(frame_ready: Value):
-    cap2 = open_camera(2, auto_exposure=1, exposure_value=60)
+    cap2 = open_camera(2, auto_exposure=3, exposure_value=400)
     if cap2 is None:
         print("Camera 2 could not be opened. Exiting.")
         return

@@ -6,6 +6,7 @@ from threading import Thread
 import process_lib.control_lib as ctrl
 import struct
 import asyncio
+import time
 
 config_message = []
 message = [0, 0, 0, 0, 0, 0, 0, 0]
@@ -187,11 +188,14 @@ async def Recv_Serial(conn, pack, require_refresh: asyncio.Event):
             command, value = pack.parse_input(msg)
             if command == "start":
                 config.update()
-                pack.insert_byte(0x06)
+                pack.insert_byte(0x07)
                 pack.insert_three_bytes(pack.num_to_bytes(1))
                 for val in config_data.values():
                     pack.insert_three_bytes(pack.num_to_bytes(int(val)))
-                pack.send_packet()
+                    print(f"Sending config value: {val}")
+                for i in range (5):
+                    pack.send_packet()
+                    time.sleep(0.05)
             elif command == "Find_Home":
                 send_message = "@mode:1$#"
                 if conn is not None:
@@ -210,7 +214,6 @@ async def Recv_Serial(conn, pack, require_refresh: asyncio.Event):
                     require_refresh.set()  # 设置事件，表示配置已更新
         except Exception as e:
             print(f"串口接收失败: {e}")
-            break
 
 async def Tik_Tok(send_ready_network: asyncio.Event, send_ready_serial: asyncio.Event, interval: float):
     while True:

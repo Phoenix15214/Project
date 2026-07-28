@@ -20,7 +20,7 @@ AVG_SLOPE_FILTER_THRESHOLD = 1
 white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
 frame_share = ctrl.MemoryShare(name='shared_frame', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
 frame_share2 = ctrl.MemoryShare(name='shared_frame2', shape=(CAMERA_HEIGHT,CAMERA_WIDTH,3), dtype='uint8')
-mode = "destination"
+mode = "ball"
 line_state = "plus"
 steel_ball_centers = []
 
@@ -550,10 +550,11 @@ def handle_pipe(conn):
         msg = conn.recv()
         if msg[0] == 2: # 2开头为检测结果
             steel_ball_centers = msg[1]
-        command, value = ctrl.Parse_Input(msg)
-        if command == "mode":
-            mode = "object" if value == "0" else "destination"
-            print(f"Mode changed to: {mode}")
+        else:
+            command, value = ctrl.Parse_Input(msg)
+            if command == "mode":
+                mode = "object" if value == "0" else "destination"
+                print(f"Mode changed to: {mode}")
         
 def main(conn=None, frame_ready1=None, frame_ready2=None):
     global mode
@@ -602,7 +603,7 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
             # 获取图像
             if frame_ready1 is not None:
                 if frame_ready1.value:
-                    frame = frame_share.read()
+                    frame = frame_share.read().copy()
                     frame_ready1.value = False
                 else:
                     frame_not_ready1 = True
@@ -614,7 +615,7 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
 
             if frame_ready2 is not None:
                 if frame_ready2.value:
-                    frame2 = frame_share2.read()
+                    frame2 = frame_share2.read().copy()
                     frame_ready2.value = False
                 else:
                     frame_not_ready2 = True
@@ -708,11 +709,11 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
                 object_coordination[1] = offsety
                 object_coordination[2] = len(centers) if centers is not None else 0
 
-                if centers is not None:
-                    for center in centers:
-                        cv2.circle(frame, center, 5, (0, 255, 0), -1)
-                        cv2.putText(frame, f"({center[0]}, {center[1]})", (center[0] + 10, center[1] - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                # if centers is not None:
+                #     for center in centers:
+                #         cv2.circle(frame, center, 5, (0, 255, 0), -1)
+                #         cv2.putText(frame, f"({center[0]}, {center[1]})", (center[0] + 10, center[1] - 10),
+                #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
                 # if path is not None:
                 #     for (row, col) in path:
@@ -766,7 +767,7 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
                     destination_coordination[0] = int(offset_x) + 2000
                     destination_coordination[1] = int(offset_y) + 2000
                     destination_coordination[2] = 0 # 表示没有终点
-                    cv2.circle(frame2, (offset_x + FRAME_CENTER_X, offset_y + FRAME_CENTER_Y), 10, (0, 255, 0), -1)
+                    # cv2.circle(frame2, (offset_x + FRAME_CENTER_X, offset_y + FRAME_CENTER_Y), 10, (0, 255, 0), -1)
                     destination_count = 0 # 重置计数器
                 else:
                     if destination_count < 2:
@@ -774,14 +775,12 @@ def main(conn=None, frame_ready1=None, frame_ready2=None):
                         destination_coordination[0] = int(offset_x) + 2000
                         destination_coordination[1] = int(offset_y) + 2000
                         destination_coordination[2] = 0 # 表示没有终点
-                        cv2.circle(frame2, (offset_x + FRAME_CENTER_X, offset_y + FRAME_CENTER_Y), 10, (0, 255, 0), -1)
-                        print("Destination detected, not archived")
+                        # cv2.circle(frame2, (offset_x + FRAME_CENTER_X, offset_y + FRAME_CENTER_Y), 10, (0, 255, 0), -1)
                     else:
                         destination_coordination[0] = int(closest_center[0]) - TARGET_X + 2000
                         destination_coordination[1] = int(closest_center[1]) - TARGET_Y + 2000
                         destination_coordination[2] = 1
-                        print("Destination detected")
-                    cv2.circle(frame2, (int(closest_center[0]), int(closest_center[1])), 10, (0, 255, 0), -1)
+                    # cv2.circle(frame2, (int(closest_center[0]), int(closest_center[1])), 10, (0, 255, 0), -1)
                     # 计算终点距离
                     distance = np.linalg.norm(np.array(destination_coordination[:2]) - np.array([TARGET_X, TARGET_Y]))
                     if distance < 50:

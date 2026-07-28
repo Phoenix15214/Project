@@ -1,7 +1,8 @@
 {
-  "angle_shift": 50,
-  "offset": 20,
-  "black_h": 100,
-  "black_s": 255,
-  "black_v": 100
+  "Oran_Param_1": 116,
+  "Oran_Param_2": 57,
+  "Oran_Param_3": 91,
+  "Oran_Param_4": 206,
+  "Oran_Param_5": 155,
+  "Oran_Param_6": 27
 }
