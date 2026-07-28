@@ -10,6 +10,7 @@ white = np.full((CAMERA_HEIGHT, CAMERA_WIDTH), 255, dtype=np.uint8)
 
 def preprocess_frame(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.bilateralFilter(gray, 9, 75, 75)
     gray = cv2.GaussianBlur(gray, (5, 5), 3)
     white_frame = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
     contours, _ = cv2.findContours(white_frame, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -56,18 +57,17 @@ def main(conn=None):
                 frame = frame_share2.read().copy()
                 white_frame = preprocess_frame(frame)
                 boxes, scores, class_ids = detector.detect(frame)
-                # frame = detector.draw_boxes(frame, boxes, scores, class_ids)
-                current_centers = [(int((x1+x2)/2), int((y1+y2)/2)) for (x1, y1, x2, y2) in boxes]
-                valid_centers = get_lost_object(last_objects, current_centers, white_frame, rio_size=40)
-                for centers in valid_centers:
-                    cv2.circle(frame, centers, 5, (0, 255, 0), -1)
-                current_centers = []
-                # for box in boxes:
-                #     x1, y1, x2, y2 = box
-                #     center_x = (x1 + x2) // 2
-                #     center_y = (y1 + y2) // 2
-                #     centers.append((center_x, center_y))
-                last_objects = valid_centers
+                frame = detector.draw_boxes(frame, boxes, scores, class_ids)
+                # current_centers = [(int((x1+x2)/2), int((y1+y2)/2)) for (x1, y1, x2, y2) in boxes]
+                # valid_centers = get_lost_object(last_objects, current_centers, white_frame, rio_size=40)
+                # for centers in valid_centers:
+                #     cv2.circle(frame, centers, 5, (0, 255, 0), -1)
+                # # for box in boxes:
+                # #     x1, y1, x2, y2 = box
+                # #     center_x = (x1 + x2) // 2
+                # #     center_y = (y1 + y2) // 2
+                # #     centers.append((center_x, center_y))
+                # last_objects = valid_centers
                 # if conn is not None:
                 #     conn.send([2, valid_centers])  # 发送检测结果
                 frame = cv2.resize(frame, (640, 480))

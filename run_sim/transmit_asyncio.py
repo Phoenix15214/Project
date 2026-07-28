@@ -14,9 +14,6 @@ pack = None
 server_socket = None
 config = ctrl.ConfigManager("config.json")
 config_data = config.get_all()
-command_to_send = ""
-send_command_ready = False
-start_send_time = time.time()
 
 def _fatal_exit(reason, exc=None):
     if exc is not None:
@@ -86,9 +83,6 @@ async def Listen_Accept(connect_socket, Connected: asyncio.Event):
 async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_serial: asyncio.Event):
     global message
     global pack
-    global command_to_send
-    global send_command_ready
-    global start_send_time
     while conn is not None:
         try:
             # 等待管道中有数据可读
@@ -100,10 +94,15 @@ async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_ser
                 update_message_manual(new_message)
                 send_ready_network.set()  # 设置事件，表示有新消息可发送
                 send_ready_serial.set()  # 设置事件，表示有新消息可发送
-            elif msg[0] == 1: # 1开头为文本消息,需要反复发送
-                command_to_send = msg[1]
-                send_command_ready = True
-                start_send_time = time.time()
+            elif msg[0] == 1: # 1开头为文本消息
+                send_message = msg[1]
+                if pack is not None:
+                    pack.send_char(send_message)
+            elif msg[0] == 2: # 2开头为检测结果
+                boxes = msg[1]
+                scores = msg[2]
+                class_ids = msg[3]
+                print(f"Received detection results: Boxes={boxes}, Scores={scores}, Class IDs={class_ids}")
         except EOFError:
             break
 
@@ -128,9 +127,6 @@ async def Send_Network(method, send_ready:asyncio.Event):
 
 async def Send_Serial(pack, send_ready: asyncio.Event):
     global message
-    global command_to_send
-    global send_command_ready
-    global start_send_time
     while True:
         try:
             await send_ready.wait()
@@ -140,10 +136,6 @@ async def Send_Serial(pack, send_ready: asyncio.Event):
                 for i in range(len(message)):
                     pack.insert_three_bytes(pack.num_to_bytes(message[i]))
                 pack.send_packet()
-            if send_command_ready and pack is not None:
-                pack.send_char(command_to_send)
-                if time.time() - start_send_time > 1: # 一秒超时
-                    send_command_ready = False
             send_ready.clear()
         except Exception as exc:
             print(f"串口发送失败: {exc}")
@@ -196,14 +188,22 @@ async def Recv_Serial(conn, pack, require_refresh: asyncio.Event):
             command, value = pack.parse_input(msg)
             if command == "start":
                 config.update()
-                pack.insert_byte(0x07) # 数据量，六个阈值
+                pack.insert_byte(0x07)
                 pack.insert_three_bytes(pack.num_to_bytes(1))
                 for val in config_data.values():
                     pack.insert_three_bytes(pack.num_to_bytes(int(val)))
                     print(f"Sending config value: {val}")
                 for i in range (5):
                     pack.send_packet()
-                    await asyncio.sleep(0.05)
+                    time.sleep(0.05)
+            elif command == "Find_Home":
+                send_message = "@mode:1$#"
+                if conn is not None:
+                    conn.send(send_message)
+            elif command == "Find_Item":
+                send_message = "@mode:0$#"
+                if conn is not None:
+                    conn.send(send_message)
             else:
                 original_value = config_data.get(command, None)
                 if original_value is not None:
