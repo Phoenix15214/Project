@@ -9,7 +9,7 @@ import asyncio
 import time
 
 config_message = []
-message = [0, 0, 0, 0, 0, 0, 0, 0]
+message = [0, 0]
 pack = None
 server_socket = None
 config = ctrl.ConfigManager("config.json")
@@ -93,9 +93,9 @@ async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_ser
         try:
             # 等待管道中有数据可读
             msg = await asyncio.to_thread(conn.recv)
-            new_message = [0, 0, 0, 0, 0, 0, 0, 0]
+            new_message = [0, 0]
             if msg[0] == 0: # 0开头为正常数据更新
-                for i in range(8):
+                for i in range(2):
                     new_message[i] = msg[i + 1]
                 update_message_manual(new_message)
                 send_ready_network.set()  # 设置事件，表示有新消息可发送
@@ -147,7 +147,7 @@ async def Send_Serial(pack, send_ready: asyncio.Event):
             send_ready.clear()
         except Exception as exc:
             print(f"串口发送失败: {exc}")
-            continue
+            raise RuntimeError(f"串口发送失败: {exc}")
         finally:
             send_ready.clear()
     send_ready.clear()  # 确保在退出前清除事件
@@ -214,6 +214,7 @@ async def Recv_Serial(conn, pack, require_refresh: asyncio.Event):
                     require_refresh.set()  # 设置事件，表示配置已更新
         except Exception as e:
             print(f"串口接收失败: {e}")
+            raise RuntimeError(f"串口接收失败: {e}")
 
 async def Tik_Tok(send_ready_network: asyncio.Event, send_ready_serial: asyncio.Event, interval: float):
     while True:
