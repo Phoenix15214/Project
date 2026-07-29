@@ -106,6 +106,9 @@ async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_ser
                 start_send_time = time.time()
         except EOFError:
             break
+        except Exception as exc:
+            print(f"管道接收失败: {exc}")
+            raise RuntimeError(f"管道接收失败: {exc}")
 
 async def Send_Network(method, send_ready:asyncio.Event):
     global message
@@ -118,6 +121,10 @@ async def Send_Network(method, send_ready:asyncio.Event):
                     ctrl._send_by_justfloat(message, server_socket)
                 elif method == "firewater":
                     ctrl._send_by_firewater(message, server_socket)
+        except BrokenPipeError:
+            print("客户端断开连接")
+            server_socket = None
+            continue
         except Exception as exc:
             print(f"发送失败: {exc}")
             server_socket = None
@@ -135,7 +142,7 @@ async def Send_Serial(pack, send_ready: asyncio.Event):
         try:
             await send_ready.wait()
             if pack is not None:
-                pack.insert_byte(0x09)  # 包头
+                pack.insert_byte(0x03)  # 包头
                 pack.insert_three_bytes(pack.num_to_bytes(0))
                 for i in range(len(message)):
                     pack.insert_three_bytes(pack.num_to_bytes(message[i]))
@@ -204,6 +211,10 @@ async def Recv_Serial(conn, pack, require_refresh: asyncio.Event):
                 for i in range (5):
                     pack.send_packet()
                     await asyncio.sleep(0.05)
+            elif command == "rec":
+                pass # 发送给电脑，开始录像
+            elif command == "stop":
+                pass # 发送给电脑，停止录像
             else:
                 original_value = config_data.get(command, None)
                 if original_value is not None:
