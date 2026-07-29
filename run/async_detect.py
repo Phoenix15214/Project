@@ -7,6 +7,7 @@ from queue import Queue, Empty, Full
 from rknnlite.api import RKNNLite
 from multiprocessing import shared_memory, Value, Pipe
 from filterpy.kalman import KalmanFilter
+import process_lib.control_lib as ctrl
 
 
 # ========================= 配置 =========================
@@ -17,7 +18,7 @@ CAP_WIDTH = 640
 CAP_HEIGHT = 480
 
 INFER_SIZE = 256
-CONF_THRESH = 0.5
+CONF_THRESH = 0.3
 IOU_THRESH = 0.45
 
 SHOW_DISPLAY = True
@@ -30,8 +31,13 @@ infer_q = Queue(maxsize=2)
 raw_q = Queue(maxsize=2)
 result_q = Queue(maxsize=2)
 display_q = Queue(maxsize=2)
+frame_share = ctrl.MemoryShare(name='shared_frame', shape=(CAP_HEIGHT, CAP_WIDTH,3), dtype='uint8')
 
 running = True
+
+
+def _should_run(stop_event=None):
+    return stop_event is None or not stop_event.is_set()
 
 
 def letterbox_rknn(img, new_shape=256, color=(114, 114, 114)):
@@ -185,76 +191,77 @@ def put_latest(q, item):
             pass
 
 
-def capture_thread():
+def capture_thread(stop_event=None):
     if isinstance(CAMERA_SOURCE, str) and "!" in CAMERA_SOURCE:
         cap = cv2.VideoCapture(CAMERA_SOURCE, cv2.CAP_GSTREAMER)
     else:
         cap = cv2.VideoCapture(CAMERA_SOURCE)
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_HEIGHT)
-    # cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    cap.set(cv2.CAP_PROP_FPS, 120)
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+    try:
+        if not cap.isOpened():
+            raise RuntimeError(f"Failed to open camera {CAMERA_SOURCE}")
 
-    while running:
-        ok, frame = cap.read()
-        if not ok:
-            time.sleep(0.001)
-            continue
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_HEIGHT)
+        # cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FPS, 120)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
 
-        h, w = frame.shape[:2]
+        while _should_run(stop_event):
+            ok, frame = cap.read()
+            if not ok:
+                raise RuntimeError("Failed to grab frame")
 
-        canvas, scale, pad_w, pad_h = letterbox_rknn(frame, INFER_SIZE)
-        rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-        input_tensor = np.expand_dims(rgb, axis=0)
+            h, w = frame.shape[:2]
 
-        if SHOW_DISPLAY:
-            put_latest(display_q, (frame, w, h))
+            canvas, scale, pad_w, pad_h = letterbox_rknn(frame, INFER_SIZE)
+            rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+            input_tensor = np.expand_dims(rgb, axis=0)
 
-        put_latest(infer_q, (input_tensor, scale, pad_w, pad_h, w, h))
+            if SHOW_DISPLAY:
+                put_latest(display_q, (frame, w, h))
 
-    cap.release()
+            put_latest(infer_q, (input_tensor, scale, pad_w, pad_h, w, h))
+    finally:
+        cap.release()
 
 
-def infer_thread():
+def infer_thread(stop_event=None):
     rknn = RKNNLite()
 
-    if rknn.load_rknn(MODEL_PATH) != 0:
-        print("load rknn failed")
-        return
+    try:
+        if rknn.load_rknn(MODEL_PATH) != 0:
+            raise RuntimeError("load rknn failed")
 
-    if rknn.init_runtime(core_mask=RKNNLite.NPU_CORE_0) != 0:
-        print("init rknn runtime failed")
+        if rknn.init_runtime(core_mask=RKNNLite.NPU_CORE_0) != 0:
+            raise RuntimeError("init rknn runtime failed")
+
+        fps_count = 0
+        fps_time = time.time()
+
+        while _should_run(stop_event):
+            try:
+                input_tensor, scale, pad_w, pad_h, w, h = infer_q.get(timeout=0.1)
+            except Empty:
+                continue
+
+            outputs = rknn.inference(inputs=[input_tensor])
+
+            # 这里统计的是拿到 NPU 推理输出的帧率
+            fps_count += 1
+            now = time.time()
+            if now - fps_time >= 1.0:
+                print(f"NPU result fps: {fps_count}")
+                fps_count = 0
+                fps_time = now
+
+            put_latest(raw_q, (outputs, scale, pad_w, pad_h, w, h))
+    finally:
         rknn.release()
-        return
-
-    fps_count = 0
-    fps_time = time.time()
-
-    while running:
-        try:
-            input_tensor, scale, pad_w, pad_h, w, h = infer_q.get(timeout=0.1)
-        except Empty:
-            continue
-
-        outputs = rknn.inference(inputs=[input_tensor])
-
-        # 这里统计的是拿到 NPU 推理输出的帧率
-        fps_count += 1
-        now = time.time()
-        if now - fps_time >= 1.0:
-            print(f"NPU result fps: {fps_count}")
-            fps_count = 0
-            fps_time = now
-
-        put_latest(raw_q, (outputs, scale, pad_w, pad_h, w, h))
-
-    rknn.release()
 
 
-def post_thread():
-    while running:
+def post_thread(stop_event=None):
+    while _should_run(stop_event):
         try:
             outputs, scale, pad_w, pad_h, w, h = raw_q.get(timeout=0.1)
         except Empty:
@@ -269,8 +276,7 @@ def post_thread():
             IOU_THRESH
         )
 
-        if SHOW_DISPLAY:
-            put_latest(result_q, (boxes, scores, cls_ids, w, h))
+        put_latest(result_q, (boxes, scores, cls_ids, w, h))
 
 
 def draw_boxes(img, boxes, scores, cls_ids, cap_w, cap_h):
@@ -293,10 +299,25 @@ def draw_boxes(img, boxes, scores, cls_ids, cap_w, cap_h):
 
     return img
 
-def main(conn=None, stop_event=None):
+
+def _ensure_threads_alive(thread_items, stop_event):
+    for name, thread in thread_items:
+        if thread.is_alive():
+            continue
+
+        stop_event.set()
+        raise RuntimeError(f"{name} thread exited unexpectedly")
+
+def main(frame_ready: Value, conn=None, stop_event=None):
+    global running
+
     line_start = (0, 100)
     line_end = (640, 300)
     last_send_time = 0.0
+    frame_ready.value = False
+
+    if stop_event is None:
+        stop_event = threading.Event()
 
     state = {
         "last_position": (0, 0),
@@ -314,9 +335,14 @@ def main(conn=None, stop_event=None):
     kf.R = 15.0
     kf.Q = np.array([[0.1, 0.0], [0.0, 5.0]])
 
-    ct = threading.Thread(target=capture_thread, daemon=True)
-    it = threading.Thread(target=infer_thread, daemon=True)
-    pt = threading.Thread(target=post_thread, daemon=True)
+    ct = threading.Thread(target=capture_thread, args=(stop_event,), daemon=True)
+    it = threading.Thread(target=infer_thread, args=(stop_event,), daemon=True)
+    pt = threading.Thread(target=post_thread, args=(stop_event,), daemon=True)
+    worker_threads = [
+        ("capture", ct),
+        ("infer", it),
+        ("post", pt),
+    ]
 
     ct.start()
     it.start()
@@ -325,7 +351,9 @@ def main(conn=None, stop_event=None):
     try:
         if SHOW_DISPLAY:
             latest = None
-            while True:
+            while _should_run(stop_event):
+                _ensure_threads_alive(worker_threads, stop_event)
+
                 try:
                     frame, cap_w, cap_h = display_q.get(timeout=0.03)
                 except Empty:
@@ -361,14 +389,19 @@ def main(conn=None, stop_event=None):
                     disp = cv2.resize(draw_frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
                     disp = draw_boxes(disp, boxes, scores, cls_ids, res_w, res_h)
 
-                cv2.imshow("RKNN Async Test", disp)
+                # cv2.imshow("RKNN Async Test", disp)
+                frame_share.write(disp)
+                frame_ready.value = True
 
                 if cv2.waitKey(1) == 27:
+                    stop_event.set()
                     break
         else:
             latest = None
-            while True:
-                while True:
+            while _should_run(stop_event):
+                _ensure_threads_alive(worker_threads, stop_event)
+
+                while _should_run(stop_event):
                     try:
                         latest = result_q.get_nowait()
                     except Empty:
@@ -389,12 +422,21 @@ def main(conn=None, stop_event=None):
                 time.sleep(0.002)
 
     except KeyboardInterrupt:
+        frame_share.close()
+        stop_event.set()
         pass
+    except Exception:
+        frame_share.close()
+        stop_event.set()
+        raise
     finally:
         running = False
+        frame_share.close()
+        stop_event.set()
         time.sleep(0.3)
         cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    main()
+    frame_ready = Value('b', False)
+    main(frame_ready=frame_ready)

@@ -77,6 +77,28 @@ def get_on_line_position(ball_center, line_start, line_end):
         t = 1
     return (int(px), int(py)), t
     
+def frame_enhancement(frame):
+    frame_lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    enhanced_l = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l)
+    enhanced_lab = cv2.merge((enhanced_l, a, b))
+    enhanced_frame = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+    return enhanced_frame
+
+def sharpen_edges(frame):
+    kernel = np.array([[0, -1, 0],
+                       [-1, 5,-1],
+                       [0, -1, 0]])
+    sharpened_frame = cv2.filter2D(frame, -1, kernel)
+    return sharpened_frame
+
+def unsharp_mask(frame, kernel_size=(9, 9), sigma=10.0, strength=1.5):
+    frame_float = frame.astype(np.float32)
+    blurred = cv2.GaussianBlur(frame_float, kernel_size, sigma)
+    detail = frame_float - blurred
+    sharpened = frame_float + strength * detail
+    sharpened = np.clip(sharpened, 0, 255).astype(np.uint8)
+    return sharpened
 
 def main(conn=None, stop_event=None):
     line_start = (0, 100) # 未定,需要变化
@@ -123,7 +145,11 @@ def main(conn=None, stop_event=None):
                 ret, frame = cap.read()
                 if not ret:
                     raise RuntimeError("Failed to grab frame")
-                
+                # 进行对比度增强
+                frame = frame_enhancement(frame)
+                frame = sharpen_edges(frame)
+                frame = unsharp_mask(frame)
+
                 boxes, scores, class_ids = detector.detect(frame)
                 frame = detector.draw_boxes(frame, boxes, scores, class_ids)
                 centers = []
@@ -163,9 +189,7 @@ def main(conn=None, stop_event=None):
                 speed = float(kf.x[1, 0])
                 # 更新 last_offset_distance 为滤波后的位置，保持状态一致性
                 last_offset_distance = float(kf.x[0, 0])
-                # =========================================================================
-
-                # (保留你原有的后续缩放逻辑，完全不动)
+                
                 offset_distance = int(offset_distance) + 1000
                 # speed = speed * 10
                 speed = int(speed) + 1000

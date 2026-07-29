@@ -32,9 +32,9 @@ def _init_pack(port="/dev/ttyUSB0", baudrate=115200):
     try:
         pack = ctrl.SerialPacket(port=port, baudrate=baudrate, timeout=0.1)
     except Exception as exc:
-        print("无法打开串口")
+        print(f"串口 {port} 打开失败，错误信息：{exc}")
         pack = None
-        # raise RuntimeError(f"无法打开串口: {exc}")
+        return None
     return pack
 
 def init_message(length):
@@ -80,7 +80,7 @@ async def Listen_Accept(connect_socket, Connected: asyncio.Event):
             print(f"Accepted connection from {addr}")
             Connected.set()
         except Exception as exc:
-            print(f"Error accepting connection: {exc}")
+            raise RuntimeError(f"监听连接失败: {exc}") from exc
 
 # 获取管道中的消息并更新全局message变量
 async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_serial: asyncio.Event):
@@ -121,14 +121,8 @@ async def Send_Network(method, send_ready:asyncio.Event):
                     ctrl._send_by_justfloat(message, server_socket)
                 elif method == "firewater":
                     ctrl._send_by_firewater(message, server_socket)
-        except BrokenPipeError:
-            print("客户端断开连接")
-            server_socket = None
-            continue
         except Exception as exc:
-            print(f"发送失败: {exc}")
-            server_socket = None
-            continue
+            raise RuntimeError(f"网络发送失败: {exc}") from exc
         finally:
             send_ready.clear()
     send_ready.clear()
@@ -149,12 +143,11 @@ async def Send_Serial(pack, send_ready: asyncio.Event):
                 pack.send_packet()
             if send_command_ready and pack is not None:
                 pack.send_char(command_to_send)
-                if time.time() - start_send_time > 1: # 一秒超时
+                if time.time() - start_send_time > 1:  # 一秒超时
                     send_command_ready = False
             send_ready.clear()
         except Exception as exc:
-            print(f"串口发送失败: {exc}")
-            raise RuntimeError(f"串口发送失败: {exc}")
+            raise RuntimeError(f"串口发送失败: {exc}") from exc
         finally:
             send_ready.clear()
     send_ready.clear()  # 确保在退出前清除事件
@@ -185,8 +178,7 @@ async def Recv_Network(require_refresh: asyncio.Event, Connected: asyncio.Event)
                         config.save()
                         require_refresh.set()  # 设置事件，表示配置已更新
             except Exception as e:
-                print(f"网络接收失败: {e}")
-                break
+                raise RuntimeError(f"网络接收失败: {e}") from e
         Connected.clear()
     Connected.clear()
 
