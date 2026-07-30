@@ -79,7 +79,7 @@ def get_on_line_position(ball_center, line_start, line_end):
     
 def frame_enhancement(frame):
     frame_lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
+    l, a, b = cv2.split(frame_lab)
     enhanced_l = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l)
     enhanced_lab = cv2.merge((enhanced_l, a, b))
     enhanced_frame = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)

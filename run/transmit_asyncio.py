@@ -35,6 +35,7 @@ def _init_pack(port="/dev/ttyUSB0", baudrate=115200):
         print(f"串口 {port} 打开失败，错误信息：{exc}")
         pack = None
         return None
+        # raise RuntimError(f"串口{port}打开失败，错误信息：{exc}")
     return pack
 
 def init_message(length):
@@ -108,7 +109,7 @@ async def Aquire_Message(conn, send_ready_network: asyncio.Event, send_ready_ser
             break
         except Exception as exc:
             print(f"管道接收失败: {exc}")
-            raise RuntimeError(f"管道接收失败: {exc}")
+            # raise RuntimeError(f"管道接收失败: {exc}")
 
 async def Send_Network(method, send_ready:asyncio.Event):
     global message
@@ -121,6 +122,10 @@ async def Send_Network(method, send_ready:asyncio.Event):
                     ctrl._send_by_justfloat(message, server_socket)
                 elif method == "firewater":
                     ctrl._send_by_firewater(message, server_socket)
+        except BrokenPipeError:
+            print("网络连接已断开")
+            server_socket.close()
+            server_socket = None
         except Exception as exc:
             raise RuntimeError(f"网络发送失败: {exc}") from exc
         finally:
@@ -177,7 +182,13 @@ async def Recv_Network(require_refresh: asyncio.Event, Connected: asyncio.Event)
                         config.set_value(command, int(value))
                         config.save()
                         require_refresh.set()  # 设置事件，表示配置已更新
+            except BrokenPipeError:
+                print("网络连接已断开")
+                break
+            except AttributeError:
+                continue
             except Exception as e:
+                print(f"网络接收失败: {e}")
                 raise RuntimeError(f"网络接收失败: {e}") from e
         Connected.clear()
     Connected.clear()

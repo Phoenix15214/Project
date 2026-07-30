@@ -8,6 +8,7 @@ from rknnlite.api import RKNNLite
 from multiprocessing import shared_memory, Value, Pipe
 from filterpy.kalman import KalmanFilter
 import process_lib.control_lib as ctrl
+import supervision as sv
 
 
 # ========================= 配置 =========================
@@ -18,7 +19,7 @@ CAP_WIDTH = 640
 CAP_HEIGHT = 480
 
 INFER_SIZE = 256
-CONF_THRESH = 0.3
+CONF_THRESH = 0.1
 IOU_THRESH = 0.45
 
 SHOW_DISPLAY = True
@@ -134,6 +135,58 @@ def get_on_line_position(ball_center, line_start, line_end):
 
     return (int(px), int(py)), t
 
+def get_projection(point, line_start, line_end):
+    """
+    计算点到线段的投影参数 t 和垂足坐标（不截断）。
+    返回: (垂足坐标 (x, y), 参数 t)
+    """
+    x1, y1 = line_start
+    x2, y2 = line_end
+    bx, by = point
+
+    dx = x2 - x1
+    dy = y2 - y1
+    denom = dx * dx + dy * dy
+    if denom == 0:
+        return (x1, y1), 0.0
+
+    t = ((bx - x1) * dx + (by - y1) * dy) / denom
+    px = x1 + t * dx
+    py = y1 + t * dy
+    return (px, py), t
+
+def frame_enhancement(frame):
+    frame_lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(frame_lab)
+    enhanced_l = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(8, 8)).apply(l)
+    # enhanced_l = cv2.bilateralFilter(l, d=9, sigmaColor=75, sigmaSpace=75)
+    enhanced_lab = cv2.merge((enhanced_l, a, b))
+    enhanced_frame = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+    return enhanced_frame
+
+def sharpen_edges(frame):
+    kernel = np.array([[0, -1, 0],
+                       [-1, 5,-1],
+                       [0, -1, 0]])
+    sharpened_frame = cv2.filter2D(frame, -1, kernel)
+    return sharpened_frame
+
+def unsharp_mask(frame, kernel_size=(9, 9), sigma=10.0, strength=1.5):
+    frame_float = frame.astype(np.float32)
+    blurred = cv2.GaussianBlur(frame_float, kernel_size, sigma)
+    detail = frame_float - blurred
+    sharpened = frame_float + strength * detail
+    sharpened = np.clip(sharpened, 0, 255).astype(np.uint8)
+    return sharpened
+
+def point_to_line_distance(point, line_point1, line_point2):
+    p = np.array(point)
+    n1 = np.array(line_point1)
+    n2 = np.array(line_point2)
+    if np.linalg.norm(n2 - n1) == 0:
+        return np.linalg.norm(p - n1)
+    distance = np.abs(np.cross(n2 - n1, n1 - p)) / np.linalg.norm(n2 - n1)
+    return distance
 
 def process_detection_result(latest, line_start, line_end, state, kf):
     if latest is None:
@@ -141,24 +194,48 @@ def process_detection_result(latest, line_start, line_end, state, kf):
 
     boxes, scores, cls_ids, res_w, res_h = latest
     centers = []
-    for box in boxes:
+    boxes_tmp, scores_tmp, cls_ids_tmp = [], [], []
+    for box, score, cls_id in zip(boxes, scores, cls_ids):
+        box_area = (box[2] - box[0]) * (box[3] - box[1])
+        if box_area > 500:
+            continue
         x1, y1, x2, y2 = box
-        center_x = (x1 + x2) // 2
-        center_y = (y1 + y2) // 2
-        centers.append((center_x, center_y))
+        center = ((x1 + x2) // 2, (y1 + y2) // 2)
+        centers.append(center)
+        boxes_tmp.append(box)
+        scores_tmp.append(score)
+        cls_ids_tmp.append(cls_id)
+    
+    boxes, scores, cls_ids = boxes_tmp, scores_tmp, cls_ids_tmp
 
-    centers = sorted(centers, key=lambda c: c[1])
-    if len(centers) > 0:
-        valid_center = centers[0]
+    # 筛选投影落在线段内的球
+    valid_candidates = []
+    for center in centers:
+        proj_point, t = get_projection(center, line_start, line_end)
+        if 0.0 <= t <= 1.0:   # 垂足在线段内部（包含端点）
+            dist = point_to_line_distance(center, line_start, line_end)
+            if dist > 15:
+                continue
+            valid_candidates.append((center, dist, proj_point, t))
+
+    if valid_candidates:
+        # 按垂直距离升序排序
+        valid_candidates.sort(key=lambda x: x[1])
+        # 取最近的一个
+        valid_center, _, proj_point, t = valid_candidates[0]
         state["last_position"] = valid_center
+        state["lost_frame"] = 0
     else:
+        # 无有效球，使用历史位置（或可考虑其他策略）
         valid_center = state["last_position"]
         state["lost_frame"] += 1
+        # 对于历史位置，重新计算投影（可能在线段外）
+        proj_point, t = get_projection(valid_center, line_start, line_end)
 
-    on_line_position, t = get_on_line_position(valid_center, line_start, line_end)
     line_length = math.hypot(line_end[0] - line_start[0], line_end[1] - line_start[1])
-    offset_distance = line_length * (t - 0.5)
+    offset_distance = line_length * (t - 0.5)   # 使用真实 t（即使超出范围）
 
+    # Kalman 更新
     current_time_kf = time.time()
     dt = current_time_kf - state["last_speed_time"] if current_time_kf - state["last_speed_time"] > 0 else 0.01
     state["last_speed_time"] = current_time_kf
@@ -170,11 +247,17 @@ def process_detection_result(latest, line_start, line_end, state, kf):
     speed = float(kf.x[1, 0])
     state["last_offset_distance"] = float(kf.x[0, 0])
 
-    offset_distance = int(offset_distance) + 1000
-    speed = int(speed) + 1000
-    state["last_speed"] = speed
+    offset_distance_send = int(offset_distance) + 1000
+    speed_send = int(speed) + 1000
+    state["last_speed"] = speed_send
 
-    return boxes, scores, cls_ids, res_w, res_h, valid_center, on_line_position, offset_distance, speed, centers
+    # 返回时，proj_point 是真实垂足（可能带浮点，可转为 int 用于显示）
+    on_line_position = (int(round(proj_point[0])), int(round(proj_point[1])))
+
+    # 排序后的中心列表（用于显示所有候选点）
+    sorted_centers = [c for c, _, _, _ in valid_candidates] if valid_candidates else []
+
+    return boxes, scores, cls_ids, res_w, res_h, valid_center, on_line_position, offset_distance_send, speed_send, sorted_centers
 
 
 def put_latest(q, item):
@@ -206,13 +289,21 @@ def capture_thread(stop_event=None):
         # cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FPS, 120)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
+        cap.set(cv2.CAP_PROP_EXPOSURE, 30)
 
         while _should_run(stop_event):
             ok, frame = cap.read()
             if not ok:
                 raise RuntimeError("Failed to grab frame")
 
+            # 进行对比度增强和锐化处理
+            # frame = frame_enhancement(frame)
+            # frame = sharpen_edges(frame)
+            # frame = unsharp_mask(frame)
             h, w = frame.shape[:2]
+            # frame = frame[2 * h // 5: 3 * h // 4, : ]  # 裁剪为中心区域
+            # frame = cv2.resize(frame, (CAP_WIDTH, CAP_HEIGHT))  # 调整为指定分辨率
 
             canvas, scale, pad_w, pad_h = letterbox_rknn(frame, INFER_SIZE)
             rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
@@ -311,8 +402,8 @@ def _ensure_threads_alive(thread_items, stop_event):
 def main(frame_ready: Value, conn=None, stop_event=None):
     global running
 
-    line_start = (0, 100)
-    line_end = (640, 300)
+    line_start = (80, 290)
+    line_end = (490, 270)
     last_send_time = 0.0
     frame_ready.value = False
 
@@ -375,6 +466,9 @@ def main(frame_ready: Value, conn=None, stop_event=None):
                         cv2.circle(draw_frame, valid_center, 5, (0, 255, 0), -1)
                     cv2.circle(draw_frame, on_line_position, 5, (0, 0, 255), -1)
                     cv2.line(draw_frame, line_start, line_end, (255, 255, 0), 2)
+                    cv2.circle(draw_frame, (80, 290), 5, (255, 0, 0), -1)
+                    cv2.circle(draw_frame, (490, 270), 5, (255, 0, 0), -1)
+
 
                     if conn is not None:
                         send_message = [0, offset_distance, speed]
