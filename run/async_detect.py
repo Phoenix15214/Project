@@ -210,30 +210,43 @@ def process_detection_result(latest, line_start, line_end, state, kf):
 
     # 筛选投影落在线段内的球
     valid_candidates = []
-    for center in centers:
+    # ---- 改动开始：在循环中记录对应的 box, score, cls_id ----
+    for idx, center in enumerate(centers):
         proj_point, t = get_projection(center, line_start, line_end)
         if 0.0 <= t <= 1.0:   # 垂足在线段内部（包含端点）
             dist = point_to_line_distance(center, line_start, line_end)
             if dist > 15:
                 continue
-            valid_candidates.append((center, dist, proj_point, t))
+            valid_candidates.append((center, dist, proj_point, t, boxes[idx], scores[idx], cls_ids[idx]))
+    # ---- 改动结束 ----
 
     if valid_candidates:
         # 按垂直距离升序排序
         valid_candidates.sort(key=lambda x: x[1])
         # 取最近的一个
-        valid_center, _, proj_point, t = valid_candidates[0]
+        # ---- 改动开始：从第一个候选中提取 box, score, cls_id ----
+        valid_center, _, proj_point, t, box, score, cls_id = valid_candidates[0]
         state["last_position"] = valid_center
         state["lost_frame"] = 0
+        boxes = [box]
+        scores = [score]
+        cls_ids = [cls_id]
+        # ---- 改动结束 ----
     else:
         # 无有效球，使用历史位置（或可考虑其他策略）
         valid_center = state["last_position"]
         state["lost_frame"] += 1
         # 对于历史位置，重新计算投影（可能在线段外）
         proj_point, t = get_projection(valid_center, line_start, line_end)
+        # ---- 改动开始：无有效候选时返回空列表 ----
+        boxes = []
+        scores = []
+        cls_ids = []
+        # ---- 改动结束 ----
 
     line_length = math.hypot(line_end[0] - line_start[0], line_end[1] - line_start[1])
     offset_distance = line_length * (t - 0.5)   # 使用真实 t（即使超出范围）
+    send_distance = offset_distance
 
     # Kalman 更新
     current_time_kf = time.time()
@@ -243,22 +256,26 @@ def process_detection_result(latest, line_start, line_end, state, kf):
     kf.F[0, 1] = dt
     kf.predict()
     kf.update(np.array([[offset_distance]]))
-
-    speed = float(kf.x[1, 0])
-    state["last_offset_distance"] = float(kf.x[0, 0])
-
     offset_distance_send = int(offset_distance) + 1000
+    
+    speed = float(kf.x[1, 0])
+    # speed = (offset_distance - state["last_offset_distance"]) / dt if dt > 0 else 0.0
+    state["last_offset_distance"] = float(kf.x[0, 0])
+    # state["last_offset_distance"] = offset_distance
+    # speed = speed / 10
+
+    
     speed_send = int(speed) + 1000
     state["last_speed"] = speed_send
 
     # 返回时，proj_point 是真实垂足（可能带浮点，可转为 int 用于显示）
     on_line_position = (int(round(proj_point[0])), int(round(proj_point[1])))
 
-    # 排序后的中心列表（用于显示所有候选点）
-    sorted_centers = [c for c, _, _, _ in valid_candidates] if valid_candidates else []
+    # ---- 改动开始：调整 sorted_centers 的提取方式 ----
+    sorted_centers = [c for c, _, _, _, _, _, _ in valid_candidates] if valid_candidates else []
+    # ---- 改动结束 ----
 
     return boxes, scores, cls_ids, res_w, res_h, valid_center, on_line_position, offset_distance_send, speed_send, sorted_centers
-
 
 def put_latest(q, item):
     try:
@@ -422,8 +439,8 @@ def main(frame_ready: Value, conn=None, stop_event=None):
     kf.x = np.array([[0.], [0.]])
     kf.F = np.array([[1., 0.01], [0., 1.]])
     kf.H = np.array([[1., 0.]])
-    kf.P *= 1000.
-    kf.R = 15.0
+    kf.P *= 1000.0
+    kf.R = 15
     kf.Q = np.array([[0.1, 0.0], [0.0, 5.0]])
 
     ct = threading.Thread(target=capture_thread, args=(stop_event,), daemon=True)
@@ -441,6 +458,7 @@ def main(frame_ready: Value, conn=None, stop_event=None):
 
     try:
         if SHOW_DISPLAY:
+            frame_count = 0
             latest = None
             while _should_run(stop_event):
                 _ensure_threads_alive(worker_threads, stop_event)
@@ -484,6 +502,12 @@ def main(frame_ready: Value, conn=None, stop_event=None):
                     disp = draw_boxes(disp, boxes, scores, cls_ids, res_w, res_h)
 
                 # cv2.imshow("RKNN Async Test", disp)
+                # if frame_count > 3:
+                #     frame_count = 0
+                #     frame_share.write(disp)
+                #     frame_ready.value = True
+                # else:
+                #     frame_count += 1
                 frame_share.write(disp)
                 frame_ready.value = True
 

@@ -32,7 +32,7 @@ def open_camera(camera_index=0):
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, )
         cap.set(cv2.CAP_PROP_EXPOSURE, 30)
         actual_auto_exp = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
         actual_exp = cap.get(cv2.CAP_PROP_EXPOSURE)

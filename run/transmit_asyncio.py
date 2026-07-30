@@ -7,6 +7,11 @@ import process_lib.control_lib as ctrl
 import struct
 import asyncio
 import time
+import json
+import time
+import urllib.request
+
+PC = "http://BAMBOO.local:8080"   # 连不上就换 http://192.168.x.x:8080
 
 config_message = []
 message = [0, 0]
@@ -56,6 +61,18 @@ def update_config_message():
 def update_message_manual(new_message):
     global message
     message = new_message
+
+def send_json(cmd):
+    """发送命令，返回电脑端的 JSON 回复"""
+    url = f"{PC}/cmd/{cmd}"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            data = json.loads(r.read())
+            print(f"  → {cmd:5s}  回复: {data}")
+            return data
+    except Exception as e:
+        print(f"  → {cmd:5s}  失败: {e}")
+        return None
 
 # 更新配置信息
 async def Update_Config(require_refresh: asyncio.Event):
