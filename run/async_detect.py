@@ -25,6 +25,9 @@ IOU_THRESH = 0.45
 SHOW_DISPLAY = True
 DISPLAY_WIDTH = 640
 DISPLAY_HEIGHT = 480
+
+line_start = (110, 305)
+line_end = (490, 270)
 # =======================================================
 
 
@@ -33,6 +36,7 @@ raw_q = Queue(maxsize=2)
 result_q = Queue(maxsize=2)
 display_q = Queue(maxsize=2)
 frame_share = ctrl.MemoryShare(name='shared_frame', shape=(CAP_HEIGHT, CAP_WIDTH,3), dtype='uint8')
+white = np.full((CAP_HEIGHT, CAP_WIDTH), 255, dtype=np.uint8)
 
 running = True
 
@@ -108,6 +112,29 @@ def postprocess_rknn(outputs, scale, pad_w, pad_h, conf_thresh, iou_thresh):
 
     return boxes_xyxy[keep].astype(np.int32), scores[keep], class_ids[keep]
 
+def get_pink_center(frame):
+    frame_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    pink_mask = cv2.inRange(frame_hsv, (130, 40, 100), (180, 80, 255))
+    pink_frame = cv2.bitwise_and(white, white, mask=pink_mask)
+    
+    pink_frame = cv2.medianBlur(pink_frame, 5)
+    pink_frame = cv2.dilate(pink_frame, None, iterations=2)
+    contours, _ = cv2.findContours(pink_frame, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        for contour in sorted_contours:
+            area = cv2.contourArea(contour)
+            if area > 100:
+                M = cv2.moments(contour)
+                if M["m00"] != 0:
+                    cX = int(M["m10"] / M["m00"])
+                    cY = int(M["m01"] / M["m00"])
+                    if cX < 350:
+                        continue
+                    if cY < 250 or cY > 400:
+                        continue
+                    return (cX, cY)
+    return None
 
 def get_on_line_position(ball_center, line_start, line_end):
     x1, y1 = line_start
@@ -215,7 +242,7 @@ def process_detection_result(latest, line_start, line_end, state, kf):
         proj_point, t = get_projection(center, line_start, line_end)
         if 0.0 <= t <= 1.0:   # 垂足在线段内部（包含端点）
             dist = point_to_line_distance(center, line_start, line_end)
-            if dist > 15:
+            if dist > 20:
                 continue
             valid_candidates.append((center, dist, proj_point, t, boxes[idx], scores[idx], cls_ids[idx]))
     # ---- 改动结束 ----
@@ -244,25 +271,53 @@ def process_detection_result(latest, line_start, line_end, state, kf):
         cls_ids = []
         # ---- 改动结束 ----
 
-    line_length = math.hypot(line_end[0] - line_start[0], line_end[1] - line_start[1])
+    # line_length = math.hypot(line_end[0] - line_start[0], line_end[1] - line_start[1])
+    line_length = 1000
     offset_distance = line_length * (t - 0.5)   # 使用真实 t（即使超出范围）
     send_distance = offset_distance
 
-    # Kalman 更新
     current_time_kf = time.time()
     dt = current_time_kf - state["last_speed_time"] if current_time_kf - state["last_speed_time"] > 0 else 0.01
     state["last_speed_time"] = current_time_kf
 
-    kf.F[0, 1] = dt
-    kf.predict()
-    kf.update(np.array([[offset_distance]]))
+    # 1. 计算瞬时速度 (基于原始位移差分，延迟最低)
+    raw_speed = 0.0
+    if dt > 0:
+        raw_speed = (offset_distance - state["last_raw_offset"]) / dt
+    state["last_raw_offset"] = offset_distance  # 更新历史位移
+
+    # 2. 中值滤波 (窗口大小为5，去除由检测框抖动引起的脉冲噪声)
+    MEDIAN_WINDOW = 13
+    state["speed_buffer"].append(raw_speed)
+    if len(state["speed_buffer"]) > MEDIAN_WINDOW:
+        state["speed_buffer"].pop(0)
+    
+    # 计算中值
+    median_speed = np.median(state["speed_buffer"])
+
+    # 3. EWMA 滤波 (平滑剩余噪声)
+    # Alpha 越大(接近1)，延迟越低但滤波效果越弱；越小越平滑但延迟略增。
+    # 建议 0.4~0.6 之间，您可以根据效果调整
+    EWMA_ALPHA = 0.15
+    state["smoothed_speed"] = EWMA_ALPHA * median_speed + (1 - EWMA_ALPHA) * state["smoothed_speed"]
+    
+    speed = state["smoothed_speed"]
+    
+    # Kalman 更新
+    # current_time_kf = time.time()
+    # dt = current_time_kf - state["last_speed_time"] if current_time_kf - state["last_speed_time"] > 0 else 0.01
+    # state["last_speed_time"] = current_time_kf
+
+    # kf.F[0, 1] = dt
+    # kf.predict()
+    # kf.update(np.array([[offset_distance]]))
     offset_distance_send = int(offset_distance) + 1000
     
-    speed = float(kf.x[1, 0])
-    # speed = (offset_distance - state["last_offset_distance"]) / dt if dt > 0 else 0.0
-    state["last_offset_distance"] = float(kf.x[0, 0])
-    # state["last_offset_distance"] = offset_distance
-    # speed = speed / 10
+    # speed = float(kf.x[1, 0])
+    # # speed = (offset_distance - state["last_offset_distance"]) / dt if dt > 0 else 0.0
+    # state["last_offset_distance"] = float(kf.x[0, 0])
+    # # state["last_offset_distance"] = offset_distance
+    # # speed = speed / 10
 
     
     speed_send = int(speed) + 1000
@@ -292,6 +347,7 @@ def put_latest(q, item):
 
 
 def capture_thread(stop_event=None):
+    global line_start, line_end
     if isinstance(CAMERA_SOURCE, str) and "!" in CAMERA_SOURCE:
         cap = cv2.VideoCapture(CAMERA_SOURCE, cv2.CAP_GSTREAMER)
     else:
@@ -313,6 +369,10 @@ def capture_thread(stop_event=None):
             ok, frame = cap.read()
             if not ok:
                 raise RuntimeError("Failed to grab frame")
+
+            pink_center = get_pink_center(frame)
+            if pink_center is not None:
+                line_end = pink_center
 
             # 进行对比度增强和锐化处理
             # frame = frame_enhancement(frame)
@@ -419,8 +479,7 @@ def _ensure_threads_alive(thread_items, stop_event):
 def main(frame_ready: Value, conn=None, stop_event=None):
     global running
 
-    line_start = (80, 290)
-    line_end = (490, 270)
+    global line_start, line_end
     last_send_time = 0.0
     frame_ready.value = False
 
@@ -433,6 +492,9 @@ def main(frame_ready: Value, conn=None, stop_event=None):
         "last_speed": 0.0,
         "last_speed_time": time.time(),
         "lost_frame": 0,
+        "speed_buffer": [],          # 中值滤波历史窗口
+        "smoothed_speed": 0.0,       # EWMA平滑后的速度
+        "last_raw_offset": 0.0,      # 上一帧的原始位移(用于计算瞬时速度)
     }
 
     kf = KalmanFilter(dim_x=2, dim_z=1)
@@ -484,9 +546,8 @@ def main(frame_ready: Value, conn=None, stop_event=None):
                         cv2.circle(draw_frame, valid_center, 5, (0, 255, 0), -1)
                     cv2.circle(draw_frame, on_line_position, 5, (0, 0, 255), -1)
                     cv2.line(draw_frame, line_start, line_end, (255, 255, 0), 2)
-                    cv2.circle(draw_frame, (80, 290), 5, (255, 0, 0), -1)
-                    cv2.circle(draw_frame, (490, 270), 5, (255, 0, 0), -1)
-
+                    cv2.circle(draw_frame, line_start, 5, (255, 0, 0), -1)
+                    cv2.circle(draw_frame, line_end, 5, (255, 0, 0), -1)
 
                     if conn is not None:
                         send_message = [0, offset_distance, speed]

@@ -37,10 +37,10 @@ def _init_pack(port="/dev/ttyUSB0", baudrate=115200):
     try:
         pack = ctrl.SerialPacket(port=port, baudrate=baudrate, timeout=0.1)
     except Exception as exc:
-        print(f"串口 {port} 打开失败，错误信息：{exc}")
-        pack = None
-        return None
-        # raise RuntimError(f"串口{port}打开失败，错误信息：{exc}")
+        # print(f"串口 {port} 打开失败，错误信息：{exc}")
+        # pack = None
+        # return None
+        raise RuntimError(f"串口{port}打开失败，错误信息：{exc}")
     return pack
 
 def init_message(length):
@@ -161,6 +161,10 @@ async def Send_Serial(pack, send_ready: asyncio.Event):
                 pack.insert_byte(0x03)  # 包头
                 pack.insert_three_bytes(pack.num_to_bytes(0))
                 for i in range(len(message)):
+                    if message[i] < 0:
+                        message[i] = 0
+                    elif message[i] > 65535:
+                        message[i] = 65535
                     pack.insert_three_bytes(pack.num_to_bytes(message[i]))
                 pack.send_packet()
             if send_command_ready and pack is not None:
