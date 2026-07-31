@@ -29,7 +29,7 @@ SHOW_BINARY = False
 DISPLAY_WIDTH = 640
 DISPLAY_HEIGHT = 480
 
-line_start = (135, 295)
+line_start = (108, 300)
 line_end = (490, 270)
 # =======================================================
 
@@ -276,7 +276,7 @@ def process_detection_result(latest, line_start, line_end, state, kf):
 
     # line_length = math.hypot(line_end[0] - line_start[0], line_end[1] - line_start[1])
     line_length = 1000
-    offset_distance = line_length * (t - 0.5)   # 使用真实 t（即使超出范围）
+    offset_distance = line_length * (t - 0.488)   # 使用真实 t（即使超出范围）
     send_distance = offset_distance
 
     current_time_kf = time.time()
@@ -556,6 +556,9 @@ def main(frame_ready: Value, conn=None, stop_event=None):
                         cv2.line(draw_frame, line_start, line_end, (255, 255, 0), 2)
                         cv2.circle(draw_frame, line_start, 5, (255, 0, 0), -1)
                         cv2.circle(draw_frame, line_end, 5, (255, 0, 0), -1)
+                        t = 0.488
+                        line_middle = (int(line_start[0] + t * (line_end[0] - line_start[0])), int(line_start[1] + t * (line_end[1] - line_start[1])))
+                        cv2.circle(draw_frame, line_middle, 5, (0, 255, 255), -1)
 
                     if conn is not None:
                         send_message = [0, offset_distance, speed]

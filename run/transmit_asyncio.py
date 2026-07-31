@@ -195,6 +195,13 @@ async def Recv_Network(require_refresh: asyncio.Event, Connected: asyncio.Event)
                 command, value = pack.parse_input(msg)
                 if command == "start":
                     config.update()
+                elif command == "rec":
+                    send_command = "start"
+                    send_json(send_command)
+                elif command == "stop":
+                    send_command = "end"
+                    send_json(send_command)
+
                 elif command is None:
                     print(f"无法解析的命令: {msg}")
                 else:
