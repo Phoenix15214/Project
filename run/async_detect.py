@@ -23,10 +23,13 @@ CONF_THRESH = 0.1
 IOU_THRESH = 0.45
 
 SHOW_DISPLAY = True
+DRAW_BOXES = True
+DRAW_LINE = True
+SHOW_BINARY = False
 DISPLAY_WIDTH = 640
 DISPLAY_HEIGHT = 480
 
-line_start = (110, 305)
+line_start = (135, 295)
 line_end = (490, 270)
 # =======================================================
 
@@ -114,7 +117,7 @@ def postprocess_rknn(outputs, scale, pad_w, pad_h, conf_thresh, iou_thresh):
 
 def get_pink_center(frame):
     frame_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    pink_mask = cv2.inRange(frame_hsv, (130, 40, 100), (180, 80, 255))
+    pink_mask = cv2.inRange(frame_hsv, (130, 35, 100), (180, 120, 255))
     pink_frame = cv2.bitwise_and(white, white, mask=pink_mask)
     
     pink_frame = cv2.medianBlur(pink_frame, 5)
@@ -133,8 +136,8 @@ def get_pink_center(frame):
                         continue
                     if cY < 250 or cY > 400:
                         continue
-                    return (cX, cY)
-    return None
+                    return (cX, cY), pink_frame
+    return None, pink_frame
 
 def get_on_line_position(ball_center, line_start, line_end):
     x1, y1 = line_start
@@ -348,6 +351,7 @@ def put_latest(q, item):
 
 def capture_thread(stop_event=None):
     global line_start, line_end
+    global SHOW_DISPLAY, SHOW_BINARY
     if isinstance(CAMERA_SOURCE, str) and "!" in CAMERA_SOURCE:
         cap = cv2.VideoCapture(CAMERA_SOURCE, cv2.CAP_GSTREAMER)
     else:
@@ -370,7 +374,7 @@ def capture_thread(stop_event=None):
             if not ok:
                 raise RuntimeError("Failed to grab frame")
 
-            pink_center = get_pink_center(frame)
+            pink_center, pink_frame = get_pink_center(frame)
             if pink_center is not None:
                 line_end = pink_center
 
@@ -386,8 +390,11 @@ def capture_thread(stop_event=None):
             rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
             input_tensor = np.expand_dims(rgb, axis=0)
 
-            if SHOW_DISPLAY:
+            if SHOW_DISPLAY and not SHOW_BINARY:
                 put_latest(display_q, (frame, w, h))
+            elif SHOW_DISPLAY and SHOW_BINARY:
+                pink_frame = cv2.cvtColor(pink_frame, cv2.COLOR_GRAY2BGR)
+                put_latest(display_q, (pink_frame, w, h))
 
             put_latest(infer_q, (input_tensor, scale, pad_w, pad_h, w, h))
     finally:
@@ -478,7 +485,7 @@ def _ensure_threads_alive(thread_items, stop_event):
 
 def main(frame_ready: Value, conn=None, stop_event=None):
     global running
-
+    global DRAW_BOXES, DRAW_LINE, SHOW_BINARY
     global line_start, line_end
     last_send_time = 0.0
     frame_ready.value = False
@@ -544,10 +551,11 @@ def main(frame_ready: Value, conn=None, stop_event=None):
                     draw_frame = frame.copy()
                     if len(centers) > 0:
                         cv2.circle(draw_frame, valid_center, 5, (0, 255, 0), -1)
-                    cv2.circle(draw_frame, on_line_position, 5, (0, 0, 255), -1)
-                    cv2.line(draw_frame, line_start, line_end, (255, 255, 0), 2)
-                    cv2.circle(draw_frame, line_start, 5, (255, 0, 0), -1)
-                    cv2.circle(draw_frame, line_end, 5, (255, 0, 0), -1)
+                    if DRAW_LINE and not SHOW_BINARY:
+                        cv2.circle(draw_frame, on_line_position, 5, (0, 0, 255), -1)
+                        cv2.line(draw_frame, line_start, line_end, (255, 255, 0), 2)
+                        cv2.circle(draw_frame, line_start, 5, (255, 0, 0), -1)
+                        cv2.circle(draw_frame, line_end, 5, (255, 0, 0), -1)
 
                     if conn is not None:
                         send_message = [0, offset_distance, speed]
@@ -560,7 +568,8 @@ def main(frame_ready: Value, conn=None, stop_event=None):
                                 conn = None
 
                     disp = cv2.resize(draw_frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
-                    disp = draw_boxes(disp, boxes, scores, cls_ids, res_w, res_h)
+                    if DRAW_BOXES and not SHOW_BINARY:
+                        disp = draw_boxes(disp, boxes, scores, cls_ids, res_w, res_h)
 
                 # cv2.imshow("RKNN Async Test", disp)
                 # if frame_count > 3:

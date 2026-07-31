@@ -1,8 +1,8 @@
 {
-  "Oran_Param_1": 116,
-  "Oran_Param_2": 57,
-  "Oran_Param_3": 91,
-  "Oran_Param_4": 206,
-  "Oran_Param_5": 155,
+  "Pink_Sat_Lower": 35,
+  "Pink_Sat_Upper": 120,
+  "Start_x": 295,
+  "Start_y": 206,
+  "Tolerance": 20,
   "Oran_Param_6": 27
 }

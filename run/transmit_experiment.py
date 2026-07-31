@@ -14,7 +14,7 @@ TARGET  = "tcp://BAMBOO.local:5555"   # 电脑地址，连不上就换成 tcp://
 CAMERA  = 0                            # 摄像头编号
 WIDTH   = 640
 HEIGHT  = 480
-QUALITY = 70                           # JPEG 质量 1~100
+QUALITY = 95                           # JPEG 质量 1~100
 SEND_TIMEOUT = 2000                    # 发送超时(ms)
 SEND_TIMEOUT_MS = 2000
 # ========================================

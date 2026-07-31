@@ -37,10 +37,10 @@ def _init_pack(port="/dev/ttyUSB0", baudrate=115200):
     try:
         pack = ctrl.SerialPacket(port=port, baudrate=baudrate, timeout=0.1)
     except Exception as exc:
-        # print(f"串口 {port} 打开失败，错误信息：{exc}")
-        # pack = None
-        # return None
-        raise RuntimError(f"串口{port}打开失败，错误信息：{exc}")
+        print(f"串口 {port} 打开失败，错误信息：{exc}")
+        pack = None
+        return None
+        # raise RuntimError(f"串口{port}打开失败，错误信息：{exc}")
     return pack
 
 def init_message(length):
