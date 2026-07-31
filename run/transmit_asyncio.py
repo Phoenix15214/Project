@@ -243,9 +243,11 @@ async def Recv_Serial(conn, pack, require_refresh: asyncio.Event):
                     pack.send_packet()
                     await asyncio.sleep(0.05)
             elif command == "rec":
-                pass # 发送给电脑，开始录像
+                send_command = "start"
+                send_json(send_command)
             elif command == "stop":
-                pass # 发送给电脑，停止录像
+                send_command = "end"
+                send_json(send_command)
             else:
                 original_value = config_data.get(command, None)
                 if original_value is not None:

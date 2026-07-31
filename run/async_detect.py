@@ -355,7 +355,7 @@ def capture_thread(stop_event=None):
     if isinstance(CAMERA_SOURCE, str) and "!" in CAMERA_SOURCE:
         cap = cv2.VideoCapture(CAMERA_SOURCE, cv2.CAP_GSTREAMER)
     else:
-        cap = cv2.VideoCapture(CAMERA_SOURCE)
+        cap = cv2.VideoCapture(CAMERA_SOURCE, cv2.CAP_V4L2)
 
     try:
         if not cap.isOpened():
@@ -549,7 +549,7 @@ def main(frame_ready: Value, conn=None, stop_event=None):
                 if result is not None:
                     boxes, scores, cls_ids, res_w, res_h, valid_center, on_line_position, offset_distance, speed, centers = result
                     draw_frame = frame.copy()
-                    if len(centers) > 0:
+                    if len(centers) > 0 and not SHOW_BINARY:
                         cv2.circle(draw_frame, valid_center, 5, (0, 255, 0), -1)
                     if DRAW_LINE and not SHOW_BINARY:
                         cv2.circle(draw_frame, on_line_position, 5, (0, 0, 255), -1)
