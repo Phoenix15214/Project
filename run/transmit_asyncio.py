@@ -37,10 +37,10 @@ def _init_pack(port="/dev/ttyUSB0", baudrate=115200):
     try:
         pack = ctrl.SerialPacket(port=port, baudrate=baudrate, timeout=0.1)
     except Exception as exc:
-        print(f"串口 {port} 打开失败，错误信息：{exc}")
-        pack = None
-        return None
-        # raise RuntimError(f"串口{port}打开失败，错误信息：{exc}")
+        # print(f"串口 {port} 打开失败，错误信息：{exc}")
+        # pack = None
+        # return None
+        raise RuntimError(f"串口{port}打开失败，错误信息：{exc}")
     return pack
 
 def init_message(length):
@@ -236,7 +236,9 @@ async def Recv_Serial(conn, pack, require_refresh: asyncio.Event):
                 config.update()
                 pack.insert_byte(0x07) # 数据量，六个阈值
                 pack.insert_three_bytes(pack.num_to_bytes(1))
-                for val in config_data.values():
+                for idx, val in enumerate(config_data.values()):
+                    if idx >= 6:
+                        break
                     pack.insert_three_bytes(pack.num_to_bytes(int(val)))
                     print(f"Sending config value: {val}")
                 for i in range (5):
@@ -244,10 +246,35 @@ async def Recv_Serial(conn, pack, require_refresh: asyncio.Event):
                     await asyncio.sleep(0.05)
             elif command == "rec":
                 send_command = "start"
+                start_time = time.time()
                 send_json(send_command)
             elif command == "stop":
                 send_command = "end"
                 send_json(send_command)
+            elif command == "box":
+                config.update()
+                config_data = config.get_all()
+                config_value = config_data.get("Draw_Box", None)
+                if config_value is not None:
+                    config.set_value("Draw_Box", 1) if config_value == 0 else config.set_value("Draw_Box", 0)
+                config.save()
+                require_refresh.set()  # 设置事件，表示配置已更新
+            elif command == "line":
+                config.update()
+                config_data = config.get_all()
+                config_value = config_data.get("Draw_Line", None)
+                if config_value is not None:
+                    config.set_value("Draw_Line", 1) if config_value == 0 else config.set_value("Draw_Line", 0)
+                config.save()
+                require_refresh.set()  # 设置事件，表示配置已更新
+            elif command == "binary":
+                config.update()
+                config_data = config.get_all()
+                config_value = config_data.get("Show_Binary", None)
+                if config_value is not None:
+                    config.set_value("Show_Binary", 1) if config_value == 0 else config.set_value("Show_Binary", 0)
+                config.save()
+                require_refresh.set()  # 设置事件，表示配置已更新
             else:
                 original_value = config_data.get(command, None)
                 if original_value is not None:

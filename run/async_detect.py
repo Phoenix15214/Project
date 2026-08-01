@@ -15,6 +15,10 @@ import supervision as sv
 MODEL_PATH = "/home/ubuntu/Project/Project/run/best.rknn"
 CAMERA_SOURCE = 0
 
+config = ctrl.ConfigManager("config.json")
+config_data = config.get_all()
+last_update_time = time.time()
+
 CAP_WIDTH = 640
 CAP_HEIGHT = 480
 
@@ -115,9 +119,46 @@ def postprocess_rknn(outputs, scale, pad_w, pad_h, conf_thresh, iou_thresh):
 
     return boxes_xyxy[keep].astype(np.int32), scores[keep], class_ids[keep]
 
+def handle_pipe():
+    global DRAW_BOXES, DRAW_LINE, SHOW_BINARY
+    # if conn is None:
+    #     return
+    # if conn.poll():
+    #     msg = conn.recv()
+    #     if msg[0] == 2: # 2开头为检测结果
+    #         steel_ball_centers = msg[1]
+    #     else:
+    #         command, value = ctrl.Parse_Input(msg)
+    #         if command == "box":
+    #             DRAW_BOXES = True if int(value) == 1 else False
+    #         elif command == "line":
+    #             DRAW_LINE = True if int(value) == 1 else False
+    #         elif command == "binary":
+    #             SHOW_BINARY = True if int(value) == 1 else False
+    global config, config_data
+    global last_update_time
+    if time.time() - last_update_time > 1.0:
+        config.update()
+        config_data = config.get_all()
+        last_update_time = time.time()
+        DRAW_BOXES = True if config_data.get("Draw_Box", 1) == 1 else False
+        DRAW_LINE = True if config_data.get("Draw_Line", 1) == 1 else False
+        SHOW_BINARY = True if config_data.get("Show_Binary", 0) == 1 else False
+
 def get_pink_center(frame):
+    global config
+    global config_data
+    global last_update_time
+    default_sat_lower = 35
+    default_sat_upper = 120
+    if time.time() - last_update_time > 1.0:
+        config.update()
+        config_data = config.get_all()
+        last_update_time = time.time()
+    sat_lower = config_data.get("Pink_Sat_Lower", default_sat_lower)
+    sat_upper = config_data.get("Pink_Sat_Upper", default_sat_upper)
     frame_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    pink_mask = cv2.inRange(frame_hsv, (130, 35, 100), (180, 120, 255))
+    pink_mask = cv2.inRange(frame_hsv, (130, sat_lower, 100), (180, sat_upper, 255))
     pink_frame = cv2.bitwise_and(white, white, mask=pink_mask)
     
     pink_frame = cv2.medianBlur(pink_frame, 5)
@@ -219,6 +260,14 @@ def point_to_line_distance(point, line_point1, line_point2):
     return distance
 
 def process_detection_result(latest, line_start, line_end, state, kf):
+    global config, config_data
+    global last_update_time
+
+    if time.time() - last_update_time > 1.0:
+        config.update()
+        config_data = config.get_all()
+        last_update_time = time.time()
+
     if latest is None:
         return None
 
@@ -245,7 +294,9 @@ def process_detection_result(latest, line_start, line_end, state, kf):
         proj_point, t = get_projection(center, line_start, line_end)
         if 0.0 <= t <= 1.0:   # 垂足在线段内部（包含端点）
             dist = point_to_line_distance(center, line_start, line_end)
-            if dist > 20:
+            default_tolerance = 20
+            tolerance = config_data.get("Tolerance", default_tolerance)
+            if dist > tolerance:
                 continue
             valid_candidates.append((center, dist, proj_point, t, boxes[idx], scores[idx], cls_ids[idx]))
     # ---- 改动结束 ----
@@ -276,7 +327,10 @@ def process_detection_result(latest, line_start, line_end, state, kf):
 
     # line_length = math.hypot(line_end[0] - line_start[0], line_end[1] - line_start[1])
     line_length = 1000
-    offset_distance = line_length * (t - 0.488)   # 使用真实 t（即使超出范围）
+    default_t_minus = 488
+    t_minus = config_data.get("t", default_t_minus)
+    t_minus = t_minus / 1000.0
+    offset_distance = line_length * (t - t_minus)   # 使用真实 t（即使超出范围）
     send_distance = offset_distance
 
     current_time_kf = time.time()
@@ -314,7 +368,7 @@ def process_detection_result(latest, line_start, line_end, state, kf):
     # kf.F[0, 1] = dt
     # kf.predict()
     # kf.update(np.array([[offset_distance]]))
-    offset_distance_send = int(offset_distance) + 1000
+    offset_distance_send = int(send_distance) + 1000
     
     # speed = float(kf.x[1, 0])
     # # speed = (offset_distance - state["last_offset_distance"]) / dt if dt > 0 else 0.0
@@ -487,6 +541,17 @@ def main(frame_ready: Value, conn=None, stop_event=None):
     global running
     global DRAW_BOXES, DRAW_LINE, SHOW_BINARY
     global line_start, line_end
+    global config, config_data
+    global last_update_time
+    config.update()
+    config_data = config.get_all()
+    last_update_time = time.time()
+
+    default_line_start_x = 108
+    default_line_start_y = 300
+    line_start_x = config_data.get("Start_x", default_line_start_x)
+    line_start_y = config_data.get("Start_y", default_line_start_y)
+    line_start = (line_start_x, line_start_y)
     last_send_time = 0.0
     frame_ready.value = False
 
@@ -532,6 +597,16 @@ def main(frame_ready: Value, conn=None, stop_event=None):
             while _should_run(stop_event):
                 _ensure_threads_alive(worker_threads, stop_event)
 
+                handle_pipe()
+
+                if time.time() - last_update_time > 1.0:
+                    config.update()
+                    config_data = config.get_all()
+                    last_update_time = time.time()
+                line_start_x = config_data.get("Start_x", default_line_start_x)
+                line_start_y = config_data.get("Start_y", default_line_start_y)
+                line_start = (line_start_x, line_start_y)
+
                 try:
                     frame, cap_w, cap_h = display_q.get(timeout=0.03)
                 except Empty:
@@ -549,14 +624,15 @@ def main(frame_ready: Value, conn=None, stop_event=None):
                 if result is not None:
                     boxes, scores, cls_ids, res_w, res_h, valid_center, on_line_position, offset_distance, speed, centers = result
                     draw_frame = frame.copy()
-                    if len(centers) > 0 and not SHOW_BINARY:
+                    if len(centers) > 0 and not SHOW_BINARY and DRAW_LINE:
                         cv2.circle(draw_frame, valid_center, 5, (0, 255, 0), -1)
                     if DRAW_LINE and not SHOW_BINARY:
                         cv2.circle(draw_frame, on_line_position, 5, (0, 0, 255), -1)
                         cv2.line(draw_frame, line_start, line_end, (255, 255, 0), 2)
                         cv2.circle(draw_frame, line_start, 5, (255, 0, 0), -1)
                         cv2.circle(draw_frame, line_end, 5, (255, 0, 0), -1)
-                        t = 0.488
+                        t_minus = config_data.get("t", 488) / 1000.0
+                        t = t_minus
                         line_middle = (int(line_start[0] + t * (line_end[0] - line_start[0])), int(line_start[1] + t * (line_end[1] - line_start[1])))
                         cv2.circle(draw_frame, line_middle, 5, (0, 255, 255), -1)
 
@@ -591,6 +667,17 @@ def main(frame_ready: Value, conn=None, stop_event=None):
             latest = None
             while _should_run(stop_event):
                 _ensure_threads_alive(worker_threads, stop_event)
+
+                handle_pipe(conn)
+
+                if time.time() - last_update_time > 1.0:
+                    config.update()
+                    config_data = config.get_all()
+                    last_update_time = time.time()
+
+                line_start_x = config_data.get("Start_x", default_line_start_x)
+                line_start_y = config_data.get("Start_y", default_line_start_y)
+                line_start = (line_start_x, line_start_y)
 
                 while _should_run(stop_event):
                     try:

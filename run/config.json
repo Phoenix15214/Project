@@ -1,8 +1,11 @@
 {
   "Pink_Sat_Lower": 35,
   "Pink_Sat_Upper": 120,
-  "Start_x": 295,
-  "Start_y": 206,
+  "Start_x": 108,
+  "Start_y": 300,
   "Tolerance": 20,
-  "t": 27
+  "t": 488,
+  "Draw_Box": 1,
+  "Draw_Line": 1,
+  "Show_Binary": 0
 }
